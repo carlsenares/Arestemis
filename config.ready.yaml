@@ -1,0 +1,39 @@
+# Ready-to-use config for Patrik. On the server:  cp config.ready.yaml config.yaml
+# (config.yaml is git-ignored; this file is committed for easy copy-paste. No secrets here.)
+
+search:
+  # Rent treated as WARM (total incl. utilities). A single flat qualifies if it meets
+  # ANY tier:  sqm >= tier.min_sqm  AND  rent_warm <= tier.max_rent_warm
+  min_sqm: 28                # hard floor; smaller is rejected
+  rent_tiers:
+    - { min_sqm: 28, max_rent_warm: 1000 }   # 28-39 m²  -> up to 1000 EUR
+    - { min_sqm: 40, max_rent_warm: 1200 }   # 40 m²+    -> up to 1200 EUR
+  min_rooms: 1
+  earliest_move_in: "2026-08-01"
+  # Garching <-> Munich corridor (U6 axis). Broad on purpose; refine later.
+  areas:
+    - Garching bei München
+    - Garching-Hochbrück
+    - Freimann
+    - Studentenstadt
+    - Schwabing
+    - Maxvorstadt
+    - München
+  postal_codes: []
+
+wg_rule:
+  allow_empty_2person_wg: true   # single flats always OK; a WG only if it's an empty 2-person WG
+
+sources:
+  wg_gesucht: true
+  kleinanzeigen: true
+  immoscout: false               # later adapter (heavy anti-bot)
+
+poll_interval_seconds: 60
+
+about_me: |
+  Hallo, ich bin Patrik Breeck, 19 Jahre alt, und studiere Wirtschaftsinformatik an der
+  TU München. Ich bin Nichtraucher, koche gerne, treibe regelmäßig Sport und lege großen
+  Wert auf Sauberkeit und Ordnung. Die Miete wird zuverlässig von meinen Eltern getragen,
+  die Zahlung ist also sicher gewährleistet. Ich bin ruhig, zuverlässig und suche ein
+  langfristiges Zuhause.
