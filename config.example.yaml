@@ -1,0 +1,35 @@
+# Copy to config.yaml and fill in your real values. config.yaml is git-ignored.
+
+search:
+  max_rent_warm: 1100        # EUR/month, warm (incl. utilities). Set your ceiling.
+  min_rooms: 1
+  min_sqm: 18
+  earliest_move_in: "2026-07-01"   # YYYY-MM-DD
+  areas:                     # Munich districts / Stadtteile you'd accept
+    - Schwabing
+    - Maxvorstadt
+    - Ludwigsvorstadt
+    - Au-Haidhausen
+    - Neuhausen
+  # Postal codes optional, used by sources that filter by PLZ:
+  postal_codes: []
+
+wg_rule:
+  # Single apartments always qualify. A WG only qualifies if it's an EMPTY
+  # 2-person WG (you choose the flatmate). The LLM classifies this from the
+  # listing description.
+  allow_empty_2person_wg: true
+
+sources:
+  wg_gesucht: true
+  kleinanzeigen: true
+  immoscout: false           # later adapter; heavy anti-bot
+
+poll_interval_seconds: 60
+
+about_me: |
+  # A short blurb used to generate your application. Write it however you like;
+  # output will be translated/written in German. Example:
+  # I'm Carl, 22, studying Informatics at TUM. Non-smoker, tidy, quiet, reliable
+  # with rent (Bafög + part-time job + parental support). Looking for a long-term
+  # home. Friendly and easy to live with.
