@@ -1,0 +1,44 @@
+[Unit]
+Description=FlatSniper — Munich apartment-hunting Telegram bot
+Documentation=https://github.com/carlsenares/flatsniper
+# Needs the network up (Telegram long-polling, WG-Gesucht, Groq).
+After=network-online.target
+Wants=network-online.target
+# Don't hammer Telegram if it crash-loops (e.g. a bad token): at most 5 starts
+# per 5 minutes, otherwise systemd gives up until manually reset.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/flatsniper
+# The app reads /root/flatsniper/.env itself (python-dotenv, absolute path), so
+# no EnvironmentFile is needed. config.yaml + .env must already exist.
+ExecStart=/root/flatsniper/.venv/bin/python -m flatsniper.main
+Restart=always
+RestartSec=10
+
+# Logs -> journald (view with: journalctl -u flatsniper -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flatsniper
+
+# --- Isolation from the co-hosted project (InsureAI) -----------------------
+# FlatSniper opens NO listening ports (long-polling), so it can't collide with
+# InsureAI's nginx/redis. These caps guarantee it also can't starve it:
+MemoryMax=256M
+CPUQuota=40%
+TasksMax=64
+
+# --- Light hardening (compatible with running from /root) ------------------
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+PrivateTmp=true
+# NOTE: do NOT add ProtectHome=true here — the code, venv, .env and SQLite DB
+# all live under /root and would become invisible. See deploy/README.md for a
+# more-hardened layout (dedicated user under /opt).
+
+[Install]
+WantedBy=multi-user.target
