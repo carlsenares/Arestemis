@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from flatsniper import bot
 from flatsniper.bot import (
     format_listing_message,
     generate_callback_data,
@@ -65,16 +66,46 @@ def test_format_message_marks_wg():
     assert "WG (2er)" in text
 
 
-def test_on_generate_answers_and_replies():
+def test_on_generate_drafts_for_cached_listing(monkeypatch):
+    monkeypatch.setattr(
+        bot, "draft_application", lambda listing, about_me, secrets: "Hallo, ich bewerbe mich ..."
+    )
+    note = MagicMock()
+    note.edit_text = AsyncMock()
     query = MagicMock()
     query.data = "gen:wg_gesucht:abc123"
     query.answer = AsyncMock()
-    query.message.reply_text = AsyncMock()
+    query.message.reply_text = AsyncMock(return_value=note)
     update = MagicMock(callback_query=query)
 
-    asyncio.run(on_generate(update, MagicMock()))
+    listing = _listing()  # source wg_gesucht, external_id abc123
+    config = MagicMock()
+    config.about_me = "Ich bin Patrik"
+    context = MagicMock()
+    context.bot_data = {"listings": {"wg_gesucht:abc123": listing}, "config": config}
+
+    asyncio.run(on_generate(update, context))
 
     query.answer.assert_awaited_once()
+    note.edit_text.assert_awaited_once_with("Hallo, ich bewerbe mich ...")
+
+
+def test_on_generate_handles_missing_listing():
+    query = MagicMock()
+    query.data = "gen:wg_gesucht:gone"
+    query.answer = AsyncMock()
+    query.message.reply_text = AsyncMock()
+    update = MagicMock(callback_query=query)
+    context = MagicMock()
+    context.bot_data = {"listings": {}, "config": MagicMock()}
+
+    asyncio.run(on_generate(update, context))
+
     query.message.reply_text.assert_awaited_once()
-    sent_text = query.message.reply_text.call_args.args[0]
-    assert "Bewerbung" in sent_text
+    assert "nicht mehr" in query.message.reply_text.call_args.args[0]
+
+
+def test_remember_listing():
+    bot_data = {}
+    bot.remember_listing(bot_data, _listing())
+    assert bot_data["listings"]["wg_gesucht:abc123"].title == "2-Zimmer-Wohnung"

@@ -165,6 +165,14 @@ def parse_listing(detail: dict, url: str) -> Listing:
     """Normalize a WG-Gesucht detail JSON payload into a Listing."""
     category = _to_int(detail.get("category"))
     is_wg = category == 0
+    # For a WG the size that matters is the whole flat (the empty-2p-WG case
+    # means taking the entire flat), not the single advertised room.
+    if is_wg:
+        sqm = _to_float(detail.get("flatshare_property_size")) or _to_float(
+            detail.get("property_size")
+        )
+    else:
+        sqm = _to_float(detail.get("property_size"))
     return Listing(
         source=name,
         external_id=str(detail.get("offer_id")),
@@ -172,7 +180,7 @@ def parse_listing(detail: dict, url: str) -> Listing:
         title=(detail.get("offer_title") or "").strip(),
         rent_warm=_warm_rent(detail),
         rooms=_to_float(detail.get("number_of_rooms")) or None,
-        sqm=_to_float(detail.get("property_size")),
+        sqm=sqm,
         is_wg=is_wg,
         wg_size=_to_int(detail.get("flatshare_inhabitants_total")) if is_wg else None,
         description=_description(detail),

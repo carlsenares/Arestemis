@@ -61,6 +61,7 @@ def test_parse_wg():
     assert listing.is_wg is True
     assert listing.wg_size == 5
     assert listing.rent_warm == 895
+    assert listing.sqm == 120.0  # whole-flat size, not the 13m² room
     assert listing.available_from is None  # 00.00.0000 -> None
     assert "5er WG" in listing.description
 

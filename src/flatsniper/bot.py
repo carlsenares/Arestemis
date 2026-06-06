@@ -15,6 +15,7 @@ swaps in the real `draft_application`.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import html
 import logging
 
@@ -28,6 +29,7 @@ from telegram.ext import (
 )
 
 from .config import Config, load_config
+from .llm.provider import draft_application
 from .models import Listing
 
 log = logging.getLogger(__name__)
@@ -40,11 +42,15 @@ SOURCE_LABELS = {
 
 # Inline-button callback_data is capped at 64 bytes by Telegram.
 _CALLBACK_PREFIX = "gen"
-_GENERATE_PLACEHOLDER = (
-    "✍️ <b>Bewerbung</b>\n\n"
-    "Hier erscheint deine maßgeschneiderte Bewerbung auf Deutsch. "
-    "Die KI-Generierung wird in Milestone 4 angeschlossen."
-)
+
+
+def listing_key(source: str, external_id: str) -> str:
+    return f"{source}:{external_id}"
+
+
+def remember_listing(bot_data: dict, listing: Listing) -> None:
+    """Cache a listing so the Generate callback can recover it later."""
+    bot_data.setdefault("listings", {})[listing_key(listing.source, listing.external_id)] = listing
 
 
 def generate_callback_data(listing: Listing) -> str:
@@ -106,12 +112,31 @@ async def send_listing(bot, chat_id: str | int, listing: Listing) -> None:
 
 
 async def on_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the ✍️ Generate button. Placeholder reply for now (M2)."""
+    """Handle the ✍️ Generate button: draft a tailored German application."""
     query = update.callback_query
     await query.answer()  # stop Telegram's spinner
     source, external_id = parse_generate_callback(query.data)
     log.info("Generate requested for %s:%s", source, external_id)
-    await query.message.reply_text(_GENERATE_PLACEHOLDER, parse_mode=ParseMode.HTML)
+
+    listing = context.bot_data.get("listings", {}).get(listing_key(source, external_id))
+    config: Config | None = context.bot_data.get("config")
+    if listing is None or config is None:
+        await query.message.reply_text(
+            "⚠️ Diese Anzeige ist nicht mehr im Zwischenspeicher (vermutlich Bot-Neustart). "
+            "Bitte öffne den Link und bewirb dich direkt."
+        )
+        return
+
+    note = await query.message.reply_text("✍️ Generiere Bewerbung …")
+    try:
+        text = await asyncio.to_thread(
+            draft_application, listing, config.about_me, config.secrets
+        )
+    except Exception:
+        log.exception("draft_application failed for %s:%s", source, external_id)
+        await note.edit_text("⚠️ Konnte die Bewerbung nicht generieren. Bitte später erneut versuchen.")
+        return
+    await note.edit_text(text or "(leer)")
 
 
 def sample_listing() -> Listing:
@@ -146,8 +171,10 @@ def run_test_message() -> int:
 
     async def _post_init(application: Application) -> None:
         chat_id = config.secrets.telegram_chat_id
+        listing = sample_listing()
+        remember_listing(application.bot_data, listing)  # so Generate works
         try:
-            await send_listing(application.bot, chat_id, sample_listing())
+            await send_listing(application.bot, chat_id, listing)
             log.info("Test message sent to chat %s", chat_id)
         except Exception:
             log.exception("Failed to send test message")
