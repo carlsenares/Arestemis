@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 
 @dataclass
@@ -21,4 +21,8 @@ class Listing:
     wg_size: int | None = None
     description: str = ""
     posted_at: datetime | None = None
+    # Earliest move-in date the listing advertises. Used by the move-in filter
+    # (Milestone 4). Not in the original ARCHITECTURE field list, but required to
+    # honor `search.earliest_move_in`.
+    available_from: date | None = None
     raw: dict = field(default_factory=dict)
