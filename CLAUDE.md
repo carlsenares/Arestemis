@@ -4,8 +4,10 @@ You are building **FlatSniper**, a Munich apartment-hunting Telegram bot. This r
 
 ## How to work
 1. Read `docs/ARCHITECTURE.md` (design) and `docs/ROADMAP.md` (scope) first.
-2. Build **milestone by milestone** following `docs/BUILD_PLAN.md`. After each milestone, verify its acceptance check before moving on.
-3. Keep changes small and runnable. Commit after each working milestone.
+2. **Before starting any non-trivial milestone, weigh whether to enter plan mode first.** If the work touches multiple files, has design choices, or its approach isn't obvious, draft and confirm a plan before writing code. Skip planning only for genuinely small, mechanical changes.
+3. Build **milestone by milestone** following `docs/BUILD_PLAN.md`. After each milestone, verify its acceptance check before moving on.
+4. **Always generate tests that verify the milestone works**, even when the acceptance check is a manual command. Prefer runnable `pytest` tests under `tests/`; run them and show they pass before considering a milestone done.
+5. Keep changes small and runnable. Commit after each working milestone.
 
 ## Hard rules
 - **Never commit secrets.** All tokens/keys live in `.env` (git-ignored). Read them via `python-dotenv`. `.env.example` lists the required vars.
