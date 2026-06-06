@@ -33,7 +33,16 @@ class SourceAdapter(Protocol):
     name: str
 
     async def fetch(
-        self, config: Config, is_new: NewPredicate | None = None
+        self,
+        config: Config,
+        is_new: NewPredicate | None = None,
+        *,
+        limit: int | None = None,
     ) -> list[Listing]:
-        """Return current listings for the configured search (first page is enough)."""
+        """Return current listings for the configured search (first page is enough).
+
+        `limit` caps how many NEW listings are hydrated this call — the scheduler
+        passes it to bound per-cycle request rate. Listings beyond the cap are
+        simply not returned (and so not marked seen), to be picked up next cycle.
+        """
         ...

@@ -5,7 +5,12 @@ The live query is the manual acceptance: `python -m flatsniper.sources.wg_gesuch
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
 
 from flatsniper.sources import wg_gesucht as wg
 
@@ -140,6 +145,47 @@ def test_offer_url_from_list():
     assert wg._offer_url(html, "333") == "https://www.wg-gesucht.de/wohnungen-in-Muenchen-Schwabing.333.html"
     # fallback when not present
     assert wg._offer_url("<html></html>", "444") == "https://www.wg-gesucht.de/444.html"
+
+
+class _Resp:
+    def __init__(self, status, json_data=None, headers=None):
+        self.status_code = status
+        self._json = json_data
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("err", request=None, response=None)
+
+    def json(self):
+        return self._json
+
+
+class _Client:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    async def get(self, url, headers=None):
+        resp = self._responses[self.calls]
+        self.calls += 1
+        return resp
+
+
+def test_fetch_detail_retries_on_429(monkeypatch):
+    monkeypatch.setattr(wg.asyncio, "sleep", AsyncMock())  # no real backoff wait
+    client = _Client([_Resp(429), _Resp(200, {"offer_id": "1"})])
+    result = asyncio.run(wg._fetch_detail(client, "1"))
+    assert result == {"offer_id": "1"}
+    assert client.calls == 2  # one retry
+
+
+def test_fetch_detail_gives_up_after_retries(monkeypatch):
+    monkeypatch.setattr(wg.asyncio, "sleep", AsyncMock())
+    client = _Client([_Resp(429)] * (wg.DETAIL_MAX_RETRIES + 1))
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(wg._fetch_detail(client, "1"))
+    assert client.calls == wg.DETAIL_MAX_RETRIES + 1
 
 
 def test_date_helpers():

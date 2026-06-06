@@ -50,7 +50,9 @@ CITIES: dict[int, dict] = {
     },
 }
 DEFAULT_CITY_ORDER = [400, 90]  # Garching first
-DETAIL_DELAY_SECONDS = 0.3  # politeness gap between detail fetches
+DETAIL_DELAY_SECONDS = 0.8  # politeness gap between detail fetches
+DETAIL_MAX_RETRIES = 2  # retries on HTTP 429
+RATE_LIMIT_BACKOFF_SECONDS = 5.0  # base backoff when no Retry-After header
 
 # WG-Gesucht category id -> (URL slug, is_wg)
 CATEGORIES: dict[int, tuple[str, bool]] = {
@@ -217,7 +219,25 @@ async def _fetch_list(
 
 
 async def _fetch_detail(client: httpx.AsyncClient, offer_id: str) -> dict:
-    resp = await client.get(_detail_url(offer_id), headers={"X-Client-Id": "wg_desktop_website"})
+    """Fetch one offer's detail JSON, backing off and retrying on HTTP 429."""
+    for attempt in range(DETAIL_MAX_RETRIES + 1):
+        resp = await client.get(
+            _detail_url(offer_id), headers={"X-Client-Id": "wg_desktop_website"}
+        )
+        if resp.status_code == 429 and attempt < DETAIL_MAX_RETRIES:
+            retry_after = resp.headers.get("Retry-After")
+            wait = (
+                float(retry_after)
+                if retry_after and retry_after.isdigit()
+                else RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
+            )
+            log.warning("WG-Gesucht: 429 on offer %s, backing off %.1fs", offer_id, wait)
+            await asyncio.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    # Retries exhausted on 429: surface the error so the caller skips (and retries
+    # the offer next cycle, since it isn't marked seen).
     resp.raise_for_status()
     return resp.json()
 
