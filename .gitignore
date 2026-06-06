@@ -8,6 +8,9 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
 
 # Data
 *.db
