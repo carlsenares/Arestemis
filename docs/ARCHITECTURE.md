@@ -72,8 +72,8 @@ SQLite via stdlib `sqlite3`. One table `seen_listings(source, external_id, first
 
 ### Filter (`filter.py`)
 Pure functions over a `Listing` + the `search` config:
-- Single apartment (`is_wg == False`) → check rent/rooms/sqm/area/move-in.
-- WG (`is_wg == True`) → only continue if `wg_size == 2` and `allow_empty_2person_wg`, then defer the "is it actually empty / new" judgment to the LLM classifier.
+- Single apartment (`is_wg == False`) → must clear the **size-tiered rent rule**: qualifies if any tier matches (`sqm >= tier.min_sqm` and `rent_warm <= tier.max_rent_warm`), plus area + move-in date. E.g. 28–39 m² ≤ €1000, 40 m²+ ≤ €1200. Anything under `min_sqm` is rejected outright.
+- WG (`is_wg == True`) → only continue if `wg_size == 2` and `allow_empty_2person_wg`, then defer the "is it actually empty / new" judgment to the LLM classifier. (Same tiered rent rule applies once classified.)
 
 ### LLM provider (`llm/provider.py`)
 Single thin module wrapping the Groq client (OpenAI-compatible). Two functions:

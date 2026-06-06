@@ -1,16 +1,26 @@
 # Copy to config.yaml and fill in your real values. config.yaml is git-ignored.
 
 search:
-  max_rent_warm: 1100        # EUR/month, warm (incl. utilities). Set your ceiling.
+  # Rent is treated as WARM (total incl. utilities). If you meant cold, change the
+  # interpretation in filter.py. A single flat qualifies if it meets ANY tier:
+  #   sqm >= tier.min_sqm  AND  rent_warm <= tier.max_rent_warm
+  # Bigger flats get a higher budget. Evaluate tiers from largest min_sqm down.
+  min_sqm: 28                # hard floor; anything smaller is rejected outright
+  rent_tiers:
+    - { min_sqm: 28, max_rent_warm: 1000 }   # 28-39 m²  -> up to 1000 EUR
+    - { min_sqm: 40, max_rent_warm: 1200 }   # 40 m²+    -> up to 1200 EUR
   min_rooms: 1
-  min_sqm: 18
-  earliest_move_in: "2026-07-01"   # YYYY-MM-DD
-  areas:                     # Munich districts / Stadtteile you'd accept
+  earliest_move_in: "2026-08-01"   # YYYY-MM-DD
+  # Area: the Garching <-> Munich corridor (TUM campus is in Garching). Broad on
+  # purpose along the U6 axis; refine later. Adapters map these names to portal areas.
+  areas:
+    - Garching bei München
+    - Garching-Hochbrück
+    - Freimann
+    - Studentenstadt
     - Schwabing
     - Maxvorstadt
-    - Ludwigsvorstadt
-    - Au-Haidhausen
-    - Neuhausen
+    - München
   # Postal codes optional, used by sources that filter by PLZ:
   postal_codes: []
 
