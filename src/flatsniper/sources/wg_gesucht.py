@@ -35,8 +35,21 @@ USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 )
-DEFAULT_CITY_ID = 90  # München
-CITY_SLUG = "Muenchen"
+# WG-Gesucht city ids + URL slugs. Garching bei München (TUM campus) is the
+# priority area; München is the broader fallback. The areas in config.yaml are
+# mapped to these via alias substrings; query order follows the config.areas
+# order (Garching is listed first there by design).
+CITIES: dict[int, dict] = {
+    400: {"slug": "Garching-b-Muenchen", "aliases": ("garching",)},
+    90: {
+        "slug": "Muenchen",
+        "aliases": (
+            "münchen", "muenchen", "munchen", "munich",
+            "freimann", "studentenstadt", "schwabing", "maxvorstadt",
+        ),
+    },
+}
+DEFAULT_CITY_ORDER = [400, 90]  # Garching first
 DETAIL_DELAY_SECONDS = 0.3  # politeness gap between detail fetches
 
 # WG-Gesucht category id -> (URL slug, is_wg)
@@ -59,10 +72,33 @@ def _enabled_categories(config: Config) -> list[int]:
     return cats
 
 
-def _list_url(category: int, city_id: int) -> str:
-    slug = CATEGORIES[category][0]
-    # {slug}-in-{City}.{city_id}.{category}.{rent_type=1}.{page=0}.html
-    return f"{BASE}/{slug}-in-{CITY_SLUG}.{city_id}.{category}.1.0.html"
+def _list_url(category: int, city_id: int, city_slug: str) -> str:
+    cat_slug = CATEGORIES[category][0]
+    # {cat_slug}-in-{CitySlug}.{city_id}.{category}.{rent_type=1}.{page=0}.html
+    return f"{BASE}/{cat_slug}-in-{city_slug}.{city_id}.{category}.1.0.html"
+
+
+def _match_city(area: str) -> int | None:
+    a = area.lower()
+    for city_id, meta in CITIES.items():
+        if any(tok in a for tok in meta["aliases"]):
+            return city_id
+    return None
+
+
+def _resolve_cities(config: Config) -> list[tuple[int, str]]:
+    """Map config.search.areas -> ordered, de-duplicated (city_id, slug) pairs.
+    Order follows config.areas, so Garching (listed first) is queried first."""
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for area in config.search.areas:
+        city_id = _match_city(area)
+        if city_id is not None and city_id not in seen:
+            seen.add(city_id)
+            out.append((city_id, CITIES[city_id]["slug"]))
+    if not out:
+        out = [(cid, CITIES[cid]["slug"]) for cid in DEFAULT_CITY_ORDER]
+    return out
 
 
 def _detail_url(offer_id: str) -> str:
@@ -163,8 +199,10 @@ def _offer_url(html: str, offer_id: str) -> str:
     return BASE + m.group(1) if m else f"{BASE}/{offer_id}.html"
 
 
-async def _fetch_list(client: httpx.AsyncClient, category: int, city_id: int) -> list[tuple[str, str]]:
-    resp = await client.get(_list_url(category, city_id))
+async def _fetch_list(
+    client: httpx.AsyncClient, category: int, city_id: int, city_slug: str
+) -> list[tuple[str, str]]:
+    resp = await client.get(_list_url(category, city_id, city_slug))
     resp.raise_for_status()
     html = resp.text
     return [(oid, _offer_url(html, oid)) for oid in _scrape_offer_ids(html)]
@@ -180,7 +218,7 @@ async def fetch(
     config: Config,
     is_new: NewPredicate | None = None,
     *,
-    city_id: int = DEFAULT_CITY_ID,
+    cities: list[tuple[int, str]] | None = None,
     limit: int | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[Listing]:
@@ -192,19 +230,23 @@ async def fetch(
             timeout=httpx.Timeout(20.0),
             follow_redirects=True,
         )
+    cities = cities or _resolve_cities(config)
+    categories = _enabled_categories(config)
 
     try:
-        # 1) Enumerate offer ids across enabled categories (one list fetch each).
+        # 1) Enumerate offer ids across cities x enabled categories (one list
+        #    fetch each), cities in priority order (Garching first).
         stubs: list[tuple[str, str]] = []
         seen_ids: set[str] = set()
-        for category in _enabled_categories(config):
-            try:
-                for offer_id, url in await _fetch_list(client, category, city_id):
-                    if offer_id not in seen_ids:
-                        seen_ids.add(offer_id)
-                        stubs.append((offer_id, url))
-            except Exception:
-                log.exception("WG-Gesucht: failed to list category %s", category)
+        for city_id, city_slug in cities:
+            for category in categories:
+                try:
+                    for offer_id, url in await _fetch_list(client, category, city_id, city_slug):
+                        if offer_id not in seen_ids:
+                            seen_ids.add(offer_id)
+                            stubs.append((offer_id, url))
+                except Exception:
+                    log.exception("WG-Gesucht: list failed city=%s cat=%s", city_id, category)
 
         # 2) Skip already-seen offers (politeness) before hydrating.
         if is_new is not None:

@@ -81,6 +81,49 @@ def test_enabled_categories_includes_wg_when_allowed():
     assert wg._enabled_categories(D()) == [1, 2]
 
 
+def test_match_city():
+    assert wg._match_city("Garching bei München") == 400  # garching wins over münchen
+    assert wg._match_city("Garching-Hochbrück") == 400
+    assert wg._match_city("München") == 90
+    assert wg._match_city("Freimann") == 90
+    assert wg._match_city("Berlin") is None
+
+
+def _config_with_areas(areas):
+    class _Search:
+        pass
+
+    class _Config:
+        pass
+
+    s = _Search()
+    s.areas = areas
+    c = _Config()
+    c.search = s
+    return c
+
+
+def test_resolve_cities_orders_garching_first_and_dedups():
+    config = _config_with_areas(
+        ["Garching bei München", "Garching-Hochbrück", "Schwabing", "München"]
+    )
+    assert wg._resolve_cities(config) == [(400, "Garching-b-Muenchen"), (90, "Muenchen")]
+
+
+def test_resolve_cities_falls_back_when_unmatched():
+    config = _config_with_areas(["Nowhere", "Atlantis"])
+    assert wg._resolve_cities(config) == [(400, "Garching-b-Muenchen"), (90, "Muenchen")]
+
+
+def test_list_url_per_city():
+    assert wg._list_url(2, 400, "Garching-b-Muenchen") == (
+        "https://www.wg-gesucht.de/wohnungen-in-Garching-b-Muenchen.400.2.1.0.html"
+    )
+    assert wg._list_url(0, 90, "Muenchen") == (
+        "https://www.wg-gesucht.de/wg-zimmer-in-Muenchen.90.0.1.0.html"
+    )
+
+
 def test_scrape_offer_ids_dedups_and_orders():
     html = (
         '<div class="wgg_card offer_list_item " data-id="111"></div>'
