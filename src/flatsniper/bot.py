@@ -246,7 +246,13 @@ async def on_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     note = await update.message.reply_text("🩺 Prüfe Portale …")
     try:
-        results = await health.check_all()
+        # Probe the live sessions when available (and distinguish a portal block
+        # from a block on just our session); fall back to a fresh probe.
+        sessions = context.bot_data.get("sessions")
+        if sessions is not None:
+            results = await health.session_aware_report(sessions.client_for)
+        else:
+            results = await health.check_all()
         await note.edit_text(health.format_report(results))
     except Exception:
         log.exception("health check failed")

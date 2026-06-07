@@ -8,42 +8,35 @@ from flatsniper import health
 from flatsniper.health import PortalHealth
 
 
-def test_classify_ok_requires_marker():
-    # 200 + listing marker -> OK (even though WG pages embed a 'captcha' widget).
-    assert health.classify("WG", 200, "<div class=offer_list_item> captcha", "offer_list_item").ok
-    # 200 without the marker -> not OK.
-    r = health.classify("WG", 200, "<html>nothing</html>", "offer_list_item")
-    assert not r.ok and "no listings" in r.detail
+def test_classify_keys_on_card_count_not_substring():
+    # 200 + real cards -> OK (even if a 'captcha' widget is embedded).
+    assert health.classify("WG", "wg_gesucht", 200, "<div> captcha", 12).ok
+    # 200 but zero cards -> blocked/stripped, NOT OK — even if marker-ish text is
+    # present in the body (the old substring check would have falsely passed).
+    r = health.classify("WG", "wg_gesucht", 200, "aditem offer_list_item", 0)
+    assert not r.ok and r.state == health.PORTAL_BLOCKED and "no listings" in r.detail
 
 
-def test_classify_block_and_rate_limit():
-    M = "listing_card"  # marker absent from the bodies below
-    assert health.classify("X", 403, "", M).detail == "BLOCKED (403)"
-    assert health.classify("X", 429, "", M).detail == "rate-limited (429)"
-    r = health.classify("X", 200, "Please verify — datadome captcha", M)
+def test_classify_block_rate_limit_challenge_and_error():
+    assert health.classify("X", "x", 403, "", 0).detail == "BLOCKED (403)"
+    assert health.classify("X", "x", 403, "", 0).state == health.PORTAL_BLOCKED
+    assert health.classify("X", "x", 429, "", 0).detail == "rate-limited (429)"
+    r = health.classify("X", "x", 200, "Please verify — datadome captcha", 0)
     assert not r.ok and "challenge" in r.detail
-    assert health.classify("X", 500, "", M).detail == "HTTP 500"
+    err = health.classify("X", "x", 500, "", 0)
+    assert err.state == health.ERROR and err.detail == "HTTP 500"
 
 
-def test_transitions_only_on_change():
-    ok = [PortalHealth("WG", True, "OK")]
-    bad = [PortalHealth("WG", False, "BLOCKED (403)")]
-    # First check, all good -> silent.
-    assert health.transitions({}, ok) == []
-    # First check, already broken -> alert.
-    assert health.transitions({}, bad) and "WG" in health.transitions({}, bad)[0]
-    # Good -> bad transition alerts; bad -> good recovers; steady states silent.
-    assert health.transitions({"WG": True}, bad)[0].startswith("⚠️")
-    assert health.transitions({"WG": False}, ok)[0].startswith("✅")
-    assert health.transitions({"WG": True}, ok) == []
-    assert health.transitions({"WG": False}, bad) == []
-
-
-def test_format_report_header():
-    assert health.format_report([PortalHealth("A", True, "OK")]).startswith("🟢")
-    mixed = [PortalHealth("A", True, "OK"), PortalHealth("B", False, "BLOCKED (403)")]
-    assert health.format_report(mixed).startswith("🔴")
-    assert "⛔ B: BLOCKED (403)" in health.format_report(mixed)
+def test_format_report_header_and_icons():
+    assert health.format_report([PortalHealth("A", "a", health.OK, "OK")]).startswith("🟢")
+    mixed = [
+        PortalHealth("A", "a", health.OK, "OK"),
+        PortalHealth("B", "b", health.PORTAL_BLOCKED, "BLOCKED (403)"),
+    ]
+    report = health.format_report(mixed)
+    assert report.startswith("🔴")
+    assert "⛔ B: BLOCKED (403)" in report
+    assert "✅ A: OK" in report
 
 
 class _Resp:
@@ -62,10 +55,23 @@ class _Client:
         return self._resp
 
 
+# For wiring tests, replace the canaries with trivial counters ("CARD" tokens) so
+# we exercise check_all's plumbing without crafting parser-valid HTML per portal.
+def _patch_canaries(monkeypatch):
+    canaries = [
+        health.Canary(s, n, "http://x", lambda b: b.count("CARD"))
+        for s, n in [("wg_gesucht", "WG-Gesucht"),
+                     ("kleinanzeigen", "Kleinanzeigen"),
+                     ("immowelt", "Immowelt")]
+    ]
+    monkeypatch.setattr(health, "CANARIES", canaries)
+
+
 def test_check_all_downgrades_when_detail_circuit_open(monkeypatch):
     from flatsniper.sources import http_session
 
-    ok_client = _Client(_Resp(200, "offer_list_item aditem serp-core-classified-card-testid"))
+    _patch_canaries(monkeypatch)
+    ok_client = _Client(_Resp(200, "CARD CARD CARD"))
     # Force the WG detail breaker open via an injected clock.
     br = http_session.CircuitBreaker("wg_gesucht", threshold=1, cooldown=600, clock=lambda: 0.0)
     br.record_failure()
@@ -78,8 +84,12 @@ def test_check_all_downgrades_when_detail_circuit_open(monkeypatch):
     assert next(r for r in results if r.name == "Immowelt").ok is True
 
 
-def test_check_all_uses_provided_clients_and_handles_errors():
-    ok_client = _Client(_Resp(200, "x offer_list_item x aditem serp-core-classified-card-testid"))
+def test_check_all_uses_provided_clients_and_handles_errors(monkeypatch):
+    from flatsniper.sources import http_session
+
+    monkeypatch.setattr(http_session, "_BREAKERS", {})  # no stale open breakers
+    _patch_canaries(monkeypatch)
+    ok_client = _Client(_Resp(200, "CARD CARD"))
     err_client = _Client(raises=ConnectionError("boom"))
 
     def get_client(source):
@@ -90,4 +100,37 @@ def test_check_all_uses_provided_clients_and_handles_errors():
     assert by_name["WG-Gesucht"].ok is True
     assert by_name["Immowelt"].ok is True
     assert by_name["Kleinanzeigen"].ok is False
+    assert by_name["Kleinanzeigen"].state == health.ERROR
     assert "error" in by_name["Kleinanzeigen"].detail
+
+
+def test_check_all_soft_block_is_not_ok(monkeypatch):
+    """The core fix: 200 OK with zero cards must read as blocked, not OK."""
+    from flatsniper.sources import http_session
+
+    monkeypatch.setattr(http_session, "_BREAKERS", {})
+    _patch_canaries(monkeypatch)
+    stripped = _Client(_Resp(200, "<html>no cards here</html>"))
+    results = asyncio.run(health.check_all(get_client=lambda s: stripped))
+    assert all(not r.ok and r.state == health.PORTAL_BLOCKED for r in results)
+
+
+def test_session_aware_report_flags_session_block(monkeypatch):
+    from flatsniper.sources import http_session
+
+    monkeypatch.setattr(http_session, "_BREAKERS", {})
+    _patch_canaries(monkeypatch)
+    # Live session: Kleinanzeigen returns 200 but zero cards; others get cards.
+    def live_get(source):
+        return _Client(_Resp(200, "" if source == "kleinanzeigen" else "CARD CARD"))
+
+    async def fake_probe(source, client=None):
+        # A FRESH probe of Kleinanzeigen still gets cards -> it's our session.
+        return PortalHealth("Kleinanzeigen", "kleinanzeigen", health.OK, "OK")
+
+    monkeypatch.setattr(health, "probe", fake_probe)
+    results = asyncio.run(health.session_aware_report(live_get))
+    ka = next(r for r in results if r.source == "kleinanzeigen")
+    assert ka.state == health.SESSION_BLOCKED and "Session" in ka.detail
+    # The portals that returned cards stay OK.
+    assert next(r for r in results if r.source == "immowelt").ok is True

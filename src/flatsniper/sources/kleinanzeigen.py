@@ -193,6 +193,14 @@ def _parse_cards(html: str) -> list[CardStub]:
     return out
 
 
+def count_list_cards(html: str) -> int:
+    """Number of real offer cards on a list page. The health watchdog uses this
+    to tell "served real listings" from "200 but the listings were stripped"
+    (a soft block) — a substring marker can't: e.g. "aditem" appears hundreds of
+    times in a healthy page's CSS/JS, so its mere presence proves nothing."""
+    return len(_parse_cards(html))
+
+
 def _card_plausible(stub: CardStub, config: Config) -> bool:
     """Cheap card-level pre-screen: keep unless card data *proves* it can't match.
 
@@ -357,8 +365,13 @@ async def fetch(
     locations: list[tuple[int, str]] | None = None,
     limit: int | None = None,
     client: httpx.AsyncClient | None = None,
+    stats: dict | None = None,
 ) -> list[Listing]:
-    """Fetch + normalize current Kleinanzeigen offers for the configured search."""
+    """Fetch + normalize current Kleinanzeigen offers for the configured search.
+
+    When `stats` is given, the raw enumerated-card count is recorded as
+    `stats["enumerated"]` so the scheduler's scrape watchdog can detect a soft
+    block (200 OK but zero cards) regardless of how many survive filtering."""
     own_client = client is None
     if own_client:
         # No injected session (e.g. the --once CLI / tests): build a one-shot
@@ -410,6 +423,8 @@ async def fetch(
             except Exception:
                 log.exception("Kleinanzeigen: failed to hydrate offer %s", stub.external_id)
 
+        if stats is not None:
+            stats["enumerated"] = len(seen_ids)
         log.info(
             "Kleinanzeigen: %d offers normalized (%d enumerated)",
             len(listings), len(seen_ids),

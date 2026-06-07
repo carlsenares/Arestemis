@@ -185,11 +185,12 @@ def test_control_ignores_non_owner():
 
 
 def test_on_health_probes_and_reports(monkeypatch):
+    from flatsniper import health
     from flatsniper.health import PortalHealth
 
     async def fake_check_all(get_client=None):
-        return [PortalHealth("WG-Gesucht", True, "OK"),
-                PortalHealth("Kleinanzeigen", False, "BLOCKED (403)")]
+        return [PortalHealth("WG-Gesucht", "wg_gesucht", health.OK, "OK"),
+                PortalHealth("Kleinanzeigen", "kleinanzeigen", health.PORTAL_BLOCKED, "BLOCKED (403)")]
 
     monkeypatch.setattr(bot.health, "check_all", fake_check_all)
     note = MagicMock()

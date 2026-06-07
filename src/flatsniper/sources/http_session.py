@@ -293,6 +293,16 @@ class SessionPool:
             self._clients[source] = client
         return client
 
+    async def rotate(self, source: str) -> None:
+        """Drop (and close) a source's client so the next `client_for` builds a
+        fresh one — new cookie jar, freshly negotiated TLS, possibly a new
+        profile. This is the self-heal for a *session*-level soft block, where
+        the portal has flagged our long-lived session and serves it empty pages
+        while fresh sessions still get listings (observed on Kleinanzeigen)."""
+        client = self._clients.pop(source, None)
+        if client is not None:
+            await aclose(client)
+
     async def aclose(self) -> None:
         for client in self._clients.values():
             await aclose(client)

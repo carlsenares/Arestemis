@@ -179,6 +179,13 @@ def _parse_cards(html: str) -> list[Card]:
     return out
 
 
+def count_list_cards(html: str) -> int:
+    """Number of real offer cards on a list page. The health watchdog uses this
+    to tell "served real listings" from "200 but the listings were stripped"
+    (a soft block) — a substring marker can't, since class names linger in CSS."""
+    return len(_parse_cards(html))
+
+
 def parse_listing(card: Card) -> Listing:
     """Card -> normalized Listing (warm rent estimated from cold)."""
     warm = _estimated_warm(card.cold_rent, card.sqm)
@@ -243,8 +250,13 @@ async def fetch(
     *,
     limit: int | None = None,
     client: httpx.AsyncClient | None = None,
+    stats: dict | None = None,
 ) -> list[Listing]:
-    """Fetch + normalize current Immowelt München offers (card-only)."""
+    """Fetch + normalize current Immowelt München offers (card-only).
+
+    When `stats` is given, the raw card count is recorded as `stats["enumerated"]`
+    so the scheduler's scrape watchdog can see whether we got any cards at all
+    (independent of how many survive de-dup/filtering)."""
     if not _enabled(config):
         return []
     own_client = client is None
@@ -257,6 +269,8 @@ async def fetch(
             headers=http_session.navigation_headers(referer=f"{BASE}/"),
         )
         cards = _parse_cards(resp.text)
+        if stats is not None:
+            stats["enumerated"] = len(cards)
         # Card-only: no detail fetch. Bound per-cycle NEW returns with is_new +
         # the cold-start limit so a fresh DB doesn't notify the whole page at once.
         if is_new is not None:
