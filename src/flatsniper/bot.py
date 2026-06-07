@@ -15,7 +15,6 @@ swaps in the real `draft_application`.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import html
 import logging
 
@@ -23,6 +22,7 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyParameters,
     Update,
 )
 from telegram.constants import ParseMode
@@ -118,31 +118,37 @@ async def send_listing(bot, chat_id: str | int, listing: Listing) -> None:
 
 
 async def on_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the ✍️ Generate button: draft a tailored German application."""
+    """Handle the ✍️ Generate button: reply (quoting that listing) with the draft."""
     query = update.callback_query
     await query.answer()  # stop Telegram's spinner
     source, external_id = parse_generate_callback(query.data)
     log.info("Generate requested for %s:%s", source, external_id)
+
+    # Quote the specific listing message so the text lands under the right one
+    # even when several alerts arrived together.
+    reply_to = ReplyParameters(
+        message_id=query.message.message_id, allow_sending_without_reply=True
+    )
 
     listing = context.bot_data.get("listings", {}).get(listing_key(source, external_id))
     config: Config | None = context.bot_data.get("config")
     if listing is None or config is None:
         await query.message.reply_text(
             "⚠️ Diese Anzeige ist nicht mehr im Zwischenspeicher (vermutlich Bot-Neustart). "
-            "Bitte öffne den Link und bewirb dich direkt."
+            "Bitte öffne den Link und bewirb dich direkt.",
+            reply_parameters=reply_to,
         )
         return
 
-    note = await query.message.reply_text("✍️ Generiere Bewerbung …")
     try:
-        text = await asyncio.to_thread(
-            draft_application, listing, config.about_me, config.secrets
-        )
+        text = draft_application(listing, config.application)
     except Exception:
         log.exception("draft_application failed for %s:%s", source, external_id)
-        await note.edit_text("⚠️ Konnte die Bewerbung nicht generieren. Bitte später erneut versuchen.")
+        await query.message.reply_text(
+            "⚠️ Konnte die Bewerbung nicht generieren.", reply_parameters=reply_to
+        )
         return
-    await note.edit_text(text or "(leer)")
+    await query.message.reply_text(text or "(leer)", reply_parameters=reply_to)
 
 
 # --- Remote control (start/stop scanning from the phone) -------------------

@@ -68,26 +68,27 @@ def test_format_message_marks_wg():
 
 def test_on_generate_drafts_for_cached_listing(monkeypatch):
     monkeypatch.setattr(
-        bot, "draft_application", lambda listing, about_me, secrets: "Hallo, ich bewerbe mich ..."
+        bot, "draft_application", lambda listing, application: "Hallo, ich bewerbe mich ..."
     )
-    note = MagicMock()
-    note.edit_text = AsyncMock()
     query = MagicMock()
     query.data = "gen:wg_gesucht:abc123"
     query.answer = AsyncMock()
-    query.message.reply_text = AsyncMock(return_value=note)
+    query.message.message_id = 4242
+    query.message.reply_text = AsyncMock()
     update = MagicMock(callback_query=query)
 
     listing = _listing()  # source wg_gesucht, external_id abc123
     config = MagicMock()
-    config.about_me = "Ich bin Patrik"
     context = MagicMock()
     context.bot_data = {"listings": {"wg_gesucht:abc123": listing}, "config": config}
 
     asyncio.run(on_generate(update, context))
 
     query.answer.assert_awaited_once()
-    note.edit_text.assert_awaited_once_with("Hallo, ich bewerbe mich ...")
+    # The draft is sent as a reply quoting the originating listing message.
+    args, kwargs = query.message.reply_text.call_args
+    assert args[0] == "Hallo, ich bewerbe mich ..."
+    assert kwargs["reply_parameters"].message_id == 4242
 
 
 def test_on_generate_handles_missing_listing():

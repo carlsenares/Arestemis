@@ -45,6 +45,17 @@ class SearchConfig:
 
 
 @dataclass(frozen=True)
+class ApplicationConfig:
+    """Template for the generated application. Kept in config.yaml (git-ignored)
+    so personal copy isn't hardcoded. `garching_line` is appended to the intro
+    only for listings in Garching."""
+
+    intro: str = ""
+    garching_line: str = ""
+    outro: str = ""
+
+
+@dataclass(frozen=True)
 class Secrets:
     """Secret values from .env. Never logged or printed."""
 
@@ -62,6 +73,7 @@ class Config:
     poll_interval_seconds: int
     about_me: str
     secrets: Secrets
+    application: ApplicationConfig = field(default_factory=ApplicationConfig)
 
     def public_dict(self) -> dict:
         """Config with secrets redacted — safe to print/log."""
@@ -82,6 +94,11 @@ class Config:
             "sources": self.sources,
             "poll_interval_seconds": self.poll_interval_seconds,
             "about_me": _preview(self.about_me),
+            "application": {
+                "intro": _preview(self.application.intro),
+                "garching_line": _preview(self.application.garching_line),
+                "outro": _preview(self.application.outro),
+            },
             "secrets": {
                 "telegram_bot_token": _redact(self.secrets.telegram_bot_token),
                 "telegram_chat_id": _redact(self.secrets.telegram_chat_id),
@@ -174,6 +191,12 @@ def load_config(
 
     secrets = _load_secrets(env_path)
     search = _parse_search(_require(raw, "search", "top level"))
+    app_raw = raw.get("application") or {}
+    application = ApplicationConfig(
+        intro=str(app_raw.get("intro", "")).strip(),
+        garching_line=str(app_raw.get("garching_line", "")).strip(),
+        outro=str(app_raw.get("outro", "")).strip(),
+    )
 
     return Config(
         search=search,
@@ -183,5 +206,6 @@ def load_config(
         sources={k: bool(v) for k, v in (raw.get("sources") or {}).items()},
         poll_interval_seconds=int(raw.get("poll_interval_seconds", 60)),
         about_me=str(raw.get("about_me", "")).strip(),
+        application=application,
         secrets=secrets,
     )

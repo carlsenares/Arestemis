@@ -21,7 +21,7 @@ import logging
 
 from groq import Groq
 
-from ..config import Secrets
+from ..config import ApplicationConfig, Secrets
 from ..models import Listing
 
 log = logging.getLogger(__name__)
@@ -29,6 +29,18 @@ log = logging.getLogger(__name__)
 
 def _client(secrets: Secrets) -> Groq:
     return Groq(api_key=secrets.groq_api_key)
+
+
+def _location_text(listing: Listing) -> str:
+    raw = listing.raw or {}
+    fields = [raw.get("city_name"), raw.get("district_custom"), raw.get("postcode"), listing.title]
+    return " ".join(str(f) for f in fields if f).lower()
+
+
+def is_garching(listing: Listing) -> bool:
+    """True if the listing is in Garching (b. München) — by name or 85748 PLZ."""
+    loc = _location_text(listing)
+    return "garching" in loc or "85748" in loc
 
 
 def _listing_blurb(listing: Listing) -> str:
@@ -41,7 +53,17 @@ def _listing_blurb(listing: Listing) -> str:
     if listing.rooms:
         bits.append(f"Zimmer: {listing.rooms:g}")
     if listing.is_wg:
-        bits.append(f"WG-Größe: {listing.wg_size or '?'} Personen")
+        bits.append(f"WG-Größe (laut Anzeige): {listing.wg_size or '?'} Personen")
+        # Room vs. flat size is the strongest "per-room rental" tell: a tiny
+        # advertised room inside a much larger flat means a single room is being
+        # sublet, not the whole empty flat.
+        raw = listing.raw or {}
+        room = raw.get("property_size")
+        flat = raw.get("flatshare_property_size")
+        if room:
+            bits.append(f"Beworbene Zimmergröße: {room} m²")
+        if flat:
+            bits.append(f"Gesamte Wohnungsgröße: {flat} m²")
     raw = listing.raw or {}
     loc = raw.get("city_name") or raw.get("district_custom")
     if loc:
@@ -55,14 +77,23 @@ def _listing_blurb(listing: Listing) -> str:
 # --- Classification -------------------------------------------------------
 
 _CLASSIFY_SYSTEM = (
-    "Du bist ein präziser Klassifikator für WG-Anzeigen auf WG-Gesucht. "
-    "Ein Nutzer sucht ausschließlich eine LEERE 2er-WG: eine Wohnung, die als "
-    "WG für genau zwei Personen ausgeschrieben ist und in der noch NIEMAND wohnt, "
-    "sodass der Nutzer die Wohnung faktisch allein übernimmt und sich den/die "
-    "zweite/n Mitbewohner/in selbst aussucht. "
-    "Das trifft NICHT zu, wenn bereits jemand in der Wohnung wohnt und nur ein "
-    "Zimmer in einer bestehenden WG frei wird, oder wenn die WG mehr als zwei "
-    "Personen hat. "
+    "Du bist ein sehr strenger Klassifikator für WG-Anzeigen auf WG-Gesucht. "
+    "Der Nutzer sucht AUSSCHLIESSLICH eine LEERE 2er-WG: die GESAMTE Wohnung "
+    "ist frei, sie ist für genau zwei Personen ausgelegt, es wohnt aktuell "
+    "NIEMAND darin, und der Nutzer übernimmt die ganze Wohnung und sucht sich "
+    "die zweite Person selbst aus. "
+    "Antworte mit false, wenn AUCH NUR EINES zutrifft: "
+    "(a) nur ein einzelnes Zimmer in einer Wohnung wird vermietet (die "
+    "beworbene Zimmergröße ist viel kleiner als die Wohnungsgröße); "
+    "(b) es wohnen bereits Personen in der Wohnung oder es wird eine bestehende "
+    "WG fortgeführt; "
+    "(c) die WG ist für mehr als zwei Personen; "
+    "(d) es handelt sich um einen gewerblichen Anbieter, Co-Living, möblierte "
+    "Einzelzimmer-Vermietung oder Anbieter, die mehrere Zimmer/Wohnungen "
+    "verwalten (z. B. Formulierungen wie 'our flats', 'our rooms', 'each room', "
+    "'co-living', 'shared apartment', 'Zimmer X von Y'); "
+    "(e) der Mitbewohner kann nicht frei gewählt werden. "
+    "Im Zweifel antworte mit false. "
     'Antworte ausschließlich mit JSON: {"empty_2p_wg": true|false, "reason": "<kurz>"}.'
 )
 
@@ -89,38 +120,21 @@ def classify_empty_2p_wg(listing: Listing, secrets: Secrets, *, client: Groq | N
 
 
 # --- Application drafting -------------------------------------------------
-
-_DRAFT_SYSTEM = (
-    "Du schreibst im Auftrag eines Wohnungssuchenden eine kurze, herzliche und "
-    "überzeugende Bewerbung auf DEUTSCH für eine konkrete Wohnungs- bzw. "
-    "WG-Anzeige. Sprich die anbietende Person höflich mit 'Hallo' an. "
-    "Gehe knapp auf die konkrete Anzeige ein (Lage, Größe oder Art der Wohnung) "
-    "und hebe relevante Stärken des Bewerbers hervor (Zuverlässigkeit, "
-    "gesicherte Mietzahlung, Sauberkeit, langfristiges Interesse). "
-    "Halte dich an 90–160 Wörter, wirke natürlich und nicht wie eine Vorlage, "
-    "vermeide Übertreibungen und Emojis. Gib NUR den Bewerbungstext aus, ohne "
-    "Betreffzeile und ohne Erklärungen."
-)
+#
+# Deterministic on purpose: the user supplies the exact German copy in
+# config.application (so it reads like them, not like an LLM, and no personal
+# data is hardcoded). The only variation is the Garching sentence, included only
+# for Garching listings. No model call — instant and predictable.
 
 
-def draft_application(
-    listing: Listing, about_me: str, secrets: Secrets, *, client: Groq | None = None
-) -> str:
-    """Return a tailored German application text for the listing."""
-    client = client or _client(secrets)
-    user = (
-        "ANZEIGE:\n"
-        f"{_listing_blurb(listing)}\n\n"
-        "ÜBER MICH (Bewerber):\n"
-        f"{about_me.strip()}\n\n"
-        "Schreibe jetzt die Bewerbung."
-    )
-    resp = client.chat.completions.create(
-        model=secrets.llm_model,
-        temperature=0.5,
-        messages=[
-            {"role": "system", "content": _DRAFT_SYSTEM},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (resp.choices[0].message.content or "").strip()
+def draft_application(listing: Listing, application: ApplicationConfig) -> str:
+    """Assemble the German application from the configured template.
+
+    intro (+ Garching sentence for Garching listings) as the first paragraph,
+    then the outro paragraph.
+    """
+    first = application.intro.strip()
+    if is_garching(listing) and application.garching_line.strip():
+        first = f"{first} {application.garching_line.strip()}".strip()
+    paragraphs = [p for p in (first, application.outro.strip()) if p]
+    return "\n\n".join(paragraphs)

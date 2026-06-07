@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from flatsniper.config import Secrets
+from flatsniper.config import ApplicationConfig, Secrets
 from flatsniper.llm import provider
 from flatsniper.models import Listing
 
@@ -42,17 +42,31 @@ def test_classify_bad_json_defaults_false():
     assert provider.classify_empty_2p_wg(_wg("x"), _secrets(), client=client) is False
 
 
-def test_draft_returns_text_and_uses_model():
-    client = _fake_client("Hallo, ich interessiere mich sehr für Ihre Wohnung ...")
-    text = provider.draft_application(
-        Listing("wg_gesucht", "1", "u", "Wohnung in Garching", sqm=40, rent_warm=1100),
-        "Ich bin Patrik, Student an der TUM.",
-        _secrets(),
-        client=client,
-    )
-    assert "Hallo" in text
-    kwargs = client.chat.completions.create.call_args.kwargs
-    assert kwargs["model"] == "test-model"
-    assert kwargs["messages"][0]["role"] == "system"
-    # the about-me text must reach the prompt
-    assert "Patrik" in kwargs["messages"][1]["content"]
+_APP = ApplicationConfig(
+    intro="Hallo, mein Name ist Patrik und ich studiere an der TUM.",
+    garching_line="Deshalb ist die Lage perfekt für mich.",
+    outro="Ich lebe sauber und die Zahlung ist gesichert.",
+)
+
+
+def test_is_garching_detects_by_name_and_plz():
+    assert provider.is_garching(Listing("k", "1", "u", "WG", raw={"city_name": "85748 Garching"}))
+    assert provider.is_garching(Listing("k", "1", "u", "Schöne Wohnung in Garching b. München"))
+    assert not provider.is_garching(Listing("k", "1", "u", "WG", raw={"city_name": "80538 München"}))
+
+
+def test_draft_includes_garching_line_only_for_garching():
+    in_garching = Listing("wg_gesucht", "1", "u", "Wohnung", raw={"city_name": "85748 Garching"})
+    text = provider.draft_application(in_garching, _APP)
+    assert text.startswith("Hallo, mein Name ist Patrik")
+    assert "Deshalb ist die Lage perfekt" in text
+    assert text.endswith("Ich lebe sauber und die Zahlung ist gesichert.")
+    # Two paragraphs: intro+garching, then outro.
+    assert "\n\n" in text
+
+
+def test_draft_omits_garching_line_elsewhere():
+    in_munich = Listing("wg_gesucht", "1", "u", "Wohnung", raw={"city_name": "80538 München"})
+    text = provider.draft_application(in_munich, _APP)
+    assert "Deshalb ist die Lage perfekt" not in text
+    assert text.startswith("Hallo, mein Name ist Patrik")

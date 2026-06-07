@@ -75,11 +75,20 @@ def test_area_empty_passes():
 # --- move_in_ok -----------------------------------------------------------
 
 def test_move_in():
-    s = _search()
+    s = _search()  # earliest_move_in = 2026-08-01
     assert F.move_in_ok(_flat(raw={"available_to_date": "31.07.2026"}), s) is False  # ends too early
     assert F.move_in_ok(_flat(raw={"available_to_date": "31.12.2026"}), s) is True
     assert F.move_in_ok(_flat(raw={"available_to_date": "00.00.0000"}), s) is True   # open-ended
     assert F.move_in_ok(_flat(raw={}), s) is True
+
+
+def test_move_in_rejects_early_available_from():
+    s = _search()  # earliest_move_in = 2026-08-01
+    assert F.move_in_ok(_flat(available_from=date(2026, 7, 1)), s) is False   # before floor
+    assert F.move_in_ok(_flat(available_from=date(2026, 5, 1)), s) is False
+    assert F.move_in_ok(_flat(available_from=date(2026, 8, 1)), s) is True    # exactly the floor
+    assert F.move_in_ok(_flat(available_from=date(2026, 9, 15)), s) is True   # later is fine
+    assert F.move_in_ok(_flat(available_from=None), s) is True                # unknown -> keep
 
 
 # --- prefilter / postclassify --------------------------------------------

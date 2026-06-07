@@ -9,11 +9,11 @@ Pure functions, no I/O. Two phases (see docs/ARCHITECTURE.md):
     empty* 2-person WG is deferred to the LLM classifier; once classified
     empty, `rent_ok` (the same tiered rule) is applied via `passes_postclassify`.
 
-Move-in semantics: `earliest_move_in` is treated as a floor (the earliest the
-user wants to move). We do NOT reject a listing for being available earlier or
-later than that — only when a listing clearly *ends* before the user could move
-in (a short-term sublet whose available-until date precedes earliest_move_in).
-This minimizes false negatives, matching the "be first, don't miss" goal.
+Move-in semantics: `earliest_move_in` is a floor. A listing is rejected if its
+advertised move-in date (`available_from`) is *before* that floor — the user
+won't take a place that needs to be occupied earlier. A listing with no known
+move-in date is kept (can't verify → don't false-reject). We also still reject
+short-term sublets that *end* before the floor (available-until precedes it).
 """
 
 from __future__ import annotations
@@ -78,7 +78,13 @@ def _parse_any_date(value) -> date | None:
 
 
 def move_in_ok(listing: Listing, search: SearchConfig) -> bool:
-    """Reject only listings that end before the user's earliest move-in date."""
+    """Reject listings whose move-in is before the floor, or that end before it.
+
+    `available_from` before `earliest_move_in` -> reject (too early to take).
+    An unknown move-in date is kept. A sublet ending before the floor is rejected.
+    """
+    if listing.available_from is not None and listing.available_from < search.earliest_move_in:
+        return False
     available_to = _parse_any_date((listing.raw or {}).get("available_to_date"))
     if available_to is not None and available_to < search.earliest_move_in:
         return False

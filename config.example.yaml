@@ -38,8 +38,16 @@ sources:
 poll_interval_seconds: 60
 
 about_me: |
-  # A short blurb used to generate your application. Write it however you like;
-  # output will be translated/written in German. Example:
+  # A short blurb about you (kept for reference / future use). Write it however
+  # you like. Example:
   # I'm Carl, 22, studying Informatics at TUM. Non-smoker, tidy, quiet, reliable
   # with rent (Bafög + part-time job + parental support). Looking for a long-term
   # home. Friendly and easy to live with.
+
+# Application template for the ✍️ Generate button. Assembled verbatim in German
+# (no LLM, so it reads exactly as you write it): intro, then garching_line ONLY
+# for listings in Garching, then outro.
+application:
+  intro: "Hallo, mein Name ist <Name> und ich studiere aktuell <Fach> an der TUM."
+  garching_line: "Deshalb ist die Lage perfekt für mich, da ich schnell und einfach zur Uni komme."
+  outro: "Ich lebe ordentlich und sauber, bin Nichtraucher und die Zahlung ist gesichert. Über eine Besichtigung würde ich mich sehr freuen."

@@ -37,3 +37,10 @@ about_me: |
   Wert auf Sauberkeit und Ordnung. Die Miete wird zuverlässig von meinen Eltern getragen,
   die Zahlung ist also sicher gewährleistet. Ich bin ruhig, zuverlässig und suche ein
   langfristiges Zuhause.
+
+# Application template for the ✍️ Generate button. Assembled verbatim (no LLM):
+# intro, then garching_line ONLY for Garching listings, then outro.
+application:
+  intro: "Hallo, mein Name ist Patrik Breeck und ich studiere aktuell Wirtschaftsinformatik an der TUM."
+  garching_line: "Deshalb ist die Lage perfekt für mich, da ich schnell und einfach zur Uni komme."
+  outro: "Ich lebe ordentlich und sauber, bin Nichtraucher und die Zahlung ist durch meine Eltern gewährleistet. Ich würde mich freuen falls wir uns über Details oder eine Besichtigung unterhalten könnten."
