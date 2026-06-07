@@ -308,7 +308,7 @@ async def fetch(
         return listings
     finally:
         if own_client:
-            await client.aclose()
+            await http_session.aclose(client)
 
 
 def _main(argv: list[str] | None = None) -> int:

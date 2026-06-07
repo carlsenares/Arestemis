@@ -37,6 +37,21 @@ from dataclasses import dataclass
 
 import httpx
 
+try:  # Browser impersonation: real Chrome TLS (JA3/JA4) + HTTP/2 fingerprint.
+    from curl_cffi import requests as _curl
+
+    _HAS_CURL = True
+except Exception:  # pragma: no cover - fallback path when curl_cffi is absent
+    _curl = None
+    _HAS_CURL = False
+
+# curl_cffi impersonation target. "chrome" tracks curl_cffi's newest supported
+# Chrome (coherent TLS + HTTP/2/3 + Client-Hint headers). When this backend is
+# active we let impersonation own the identity headers (UA, sec-ch-ua, ...) so
+# they always match the fingerprint — we only layer on Accept-Language + Referer.
+IMPERSONATE = "chrome"
+ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -157,14 +172,29 @@ def new_client(
     *,
     timeout: float = 20.0,
     rng: random.Random | None = None,
-) -> httpx.AsyncClient:
-    """Build an httpx client wearing one coherent browser identity.
+):
+    """Build an HTTP client with the strongest available browser disguise.
 
-    HTTP/2 is requested (Chrome speaks h2); we fall back to HTTP/1.1 if the
-    optional `h2` package isn't installed rather than crash a deploy. Cookies
-    persist for the client's lifetime, so reusing one client across cycles looks
-    like a returning session (see `SessionPool`).
+    Primary: a `curl_cffi` session impersonating Chrome — this is the deepest
+    masking layer, replicating Chrome's TLS (JA3/JA4) and HTTP/2 fingerprints,
+    which header-only spoofing can't. A WAF that fingerprints the handshake (e.g.
+    DataDome) sees a real browser. Impersonation owns the identity headers (so
+    they match the fingerprint); we only set Accept-Language (German) here and
+    pass Referer/Accept per request via the header builders.
+
+    Fallback (curl_cffi unavailable): an httpx client wearing one coherent
+    desktop-Chrome `Profile` over HTTP/2. Weaker (non-Chrome TLS) but functional.
+
+    Either way cookies persist for the client's lifetime, so reusing one client
+    across cycles looks like a returning session (see `SessionPool`).
     """
+    if _HAS_CURL:
+        return _curl.AsyncSession(
+            impersonate=IMPERSONATE,
+            headers={"Accept-Language": ACCEPT_LANGUAGE},
+            timeout=timeout,
+            default_headers=True,
+        )
     profile = profile or pick_profile(rng)
     kwargs = dict(
         headers=client_headers(profile),
@@ -177,6 +207,14 @@ def new_client(
         return httpx.AsyncClient(**kwargs)
 
 
+async def aclose(client) -> None:
+    """Close a client from either backend (httpx: aclose; curl_cffi: close)."""
+    if hasattr(client, "aclose"):
+        await client.aclose()
+    elif hasattr(client, "close"):
+        await client.close()
+
+
 class SessionPool:
     """One long-lived, cookie-keeping client per source, reused across cycles.
 
@@ -186,10 +224,10 @@ class SessionPool:
     """
 
     def __init__(self, *, rng: random.Random | None = None) -> None:
-        self._clients: dict[str, httpx.AsyncClient] = {}
+        self._clients: dict = {}
         self._rng = rng
 
-    def client_for(self, source: str) -> httpx.AsyncClient:
+    def client_for(self, source: str):
         client = self._clients.get(source)
         if client is None:
             client = new_client(rng=self._rng)
@@ -198,5 +236,5 @@ class SessionPool:
 
     async def aclose(self) -> None:
         for client in self._clients.values():
-            await client.aclose()
+            await aclose(client)
         self._clients.clear()

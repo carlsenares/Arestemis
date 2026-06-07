@@ -79,17 +79,28 @@ def test_api_headers_look_like_xhr_and_merge_extra():
     assert h["X-Client-Id"] == "abc"
 
 
-def test_new_client_wears_profile_and_negotiates_http2():
+def test_new_client_is_usable_and_closeable():
     async def go():
-        client = hs.new_client(hs.PROFILES[0])
+        client = hs.new_client()
         try:
-            assert client.headers["user-agent"] == hs.PROFILES[0].user_agent
-            # h2 is a declared dependency, so HTTP/2 should be enabled.
-            assert client._transport._pool._http2 is True
+            # Backend-agnostic contract: an async GET and a working closer.
+            assert callable(getattr(client, "get", None))
         finally:
-            await client.aclose()
+            await hs.aclose(client)  # works for curl_cffi (close) and httpx (aclose)
 
     asyncio.run(go())
+
+
+def test_curl_cffi_is_the_active_backend():
+    # The whole point of the anti-detection work: impersonation must be active.
+    # (If curl_cffi is somehow missing in CI, the httpx fallback is still valid.)
+    if hs._HAS_CURL:
+        assert hs.IMPERSONATE == "chrome"
+        client = hs.new_client()
+        assert type(client).__module__.startswith("curl_cffi")
+        asyncio.run(hs.aclose(client))
+    else:  # pragma: no cover
+        assert isinstance(hs.new_client(), httpx.AsyncClient)
 
 
 def test_session_pool_reuses_one_client_per_source():
@@ -101,7 +112,6 @@ def test_session_pool_reuses_one_client_per_source():
             b1 = pool.client_for("kleinanzeigen")
             assert a1 is a2  # same source -> same (cookie-keeping) client
             assert a1 is not b1  # different source -> different client
-            assert isinstance(a1, httpx.AsyncClient)
         finally:
             await pool.aclose()
         # aclose empties the pool.

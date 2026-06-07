@@ -1,5 +1,6 @@
 httpx>=0.27
-h2>=4            # HTTP/2 for httpx — real Chrome speaks h2 (anti-ban; optional, degrades to h1)
+h2>=4            # HTTP/2 for the httpx fallback path
+curl_cffi>=0.7  # browser impersonation: real Chrome TLS (JA3/JA4) + HTTP/2 fingerprint (anti-detection)
 python-telegram-bot>=21
 PyYAML>=6
 python-dotenv>=1
