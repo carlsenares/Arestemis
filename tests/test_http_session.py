@@ -103,6 +103,36 @@ def test_curl_cffi_is_the_active_backend():
         assert isinstance(hs.new_client(), httpx.AsyncClient)
 
 
+def test_circuit_breaker_opens_and_cools_down():
+    t = {"now": 0.0}
+    br = hs.CircuitBreaker("wg", threshold=2, cooldown=600.0, clock=lambda: t["now"])
+    assert br.allow() is True
+    assert br.record_failure() is False  # 1st failure: not open yet
+    assert br.allow() is True
+    assert br.record_failure() is True   # 2nd failure: opens, returns True once
+    assert br.is_open() and br.allow() is False
+    assert 0 < br.seconds_left() <= 600
+    # Still open just before cooldown elapses; closed after.
+    t["now"] = 599
+    assert br.allow() is False
+    t["now"] = 600
+    assert br.allow() is True
+
+
+def test_circuit_breaker_success_resets():
+    br = hs.CircuitBreaker("x", threshold=2, cooldown=10, clock=lambda: 0.0)
+    br.record_failure()
+    br.record_success()  # clears the failure count
+    assert br.record_failure() is False  # back to needing `threshold` again
+    assert br.allow() is True
+
+
+def test_get_breaker_is_shared_by_name():
+    a = hs.get_breaker("shared-name-test")
+    b = hs.get_breaker("shared-name-test")
+    assert a is b  # scheduler and /health see the same instance
+
+
 def test_session_pool_reuses_one_client_per_source():
     async def go():
         pool = hs.SessionPool()

@@ -33,6 +33,7 @@ docs/ARCHITECTURE.md for the escalation path.
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -213,6 +214,64 @@ async def aclose(client) -> None:
         await client.aclose()
     elif hasattr(client, "close"):
         await client.close()
+
+
+# --- Rate-limit circuit breaker -------------------------------------------
+
+
+class RateLimited(Exception):
+    """A request was rate-limited (HTTP 429) after exhausting in-call retries."""
+
+
+class CircuitBreaker:
+    """Stops hitting a rate-limited endpoint instead of hammering it.
+
+    When a guarded endpoint (e.g. WG-Gesucht's detail API) returns 429, retrying
+    it every cycle *sustains* the penalty and risks escalating a rate-limit into
+    a real ban. After `threshold` failures the breaker "opens" for `cooldown`
+    seconds — callers check `allow()` and skip the endpoint entirely while open,
+    letting the limit recover. A single success closes it again.
+    """
+
+    def __init__(self, name: str, *, threshold: int = 2, cooldown: float = 600.0,
+                 clock=time.monotonic) -> None:
+        self.name = name
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self._clock = clock
+        self.fails = 0
+        self._open_until = 0.0
+
+    def allow(self) -> bool:
+        """True if the endpoint may be called now (circuit closed or cooled down)."""
+        return self._clock() >= self._open_until
+
+    def is_open(self) -> bool:
+        return not self.allow()
+
+    def seconds_left(self) -> float:
+        return max(0.0, self._open_until - self._clock())
+
+    def record_success(self) -> None:
+        self.fails = 0
+        self._open_until = 0.0
+
+    def record_failure(self) -> bool:
+        """Register a 429. Returns True if this just *opened* the circuit."""
+        self.fails += 1
+        if self.fails >= self.threshold and not self.is_open():
+            self._open_until = self._clock() + self.cooldown
+            return True
+        return False
+
+
+_BREAKERS: dict[str, CircuitBreaker] = {}
+
+
+def get_breaker(name: str) -> CircuitBreaker:
+    """Shared (process-global) breaker per name, so the scheduler and the
+    /health command see the same state."""
+    return _BREAKERS.setdefault(name, CircuitBreaker(name))
 
 
 class SessionPool:

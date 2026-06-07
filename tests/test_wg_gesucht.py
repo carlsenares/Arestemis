@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from flatsniper.sources import http_session
 from flatsniper.sources import wg_gesucht as wg
 
 # Trimmed shapes mirroring the real /api/public/offers/{id} payload.
@@ -194,10 +195,10 @@ def test_fetch_detail_retries_on_429(monkeypatch):
     assert client.calls == 2  # one retry
 
 
-def test_fetch_detail_gives_up_after_retries(monkeypatch):
+def test_fetch_detail_raises_ratelimited_after_retries(monkeypatch):
     monkeypatch.setattr(wg.asyncio, "sleep", AsyncMock())
     client = _Client([_Resp(429)] * (wg.DETAIL_MAX_RETRIES + 1))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(http_session.RateLimited):
         asyncio.run(wg._fetch_detail(client, "1"))
     assert client.calls == wg.DETAIL_MAX_RETRIES + 1
 

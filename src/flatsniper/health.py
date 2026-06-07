@@ -92,7 +92,16 @@ async def check_all(get_client=None) -> list[PortalHealth]:
     try:
         for source, display, url, marker in CANARIES:
             client = shared if own else get_client(source)
-            out.append(await _check_one(client, display, url, marker))
+            result = await _check_one(client, display, url, marker)
+            # The canary probes the list page; a healthy list can still hide a
+            # rate-limited detail API. Surface that via the circuit breaker.
+            breaker = http_session.get_breaker(source)
+            if result.ok and breaker.is_open():
+                mins = int(breaker.seconds_left() // 60) + 1
+                result = PortalHealth(
+                    display, False, f"Liste OK, Detail-API gedrosselt (~{mins} min Cooldown)"
+                )
+            out.append(result)
     finally:
         if own and shared is not None:
             await http_session.aclose(shared)

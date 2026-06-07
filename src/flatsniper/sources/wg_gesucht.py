@@ -49,7 +49,7 @@ CITIES: dict[int, dict] = {
 DEFAULT_CITY_ORDER = [400, 90]  # Garching first
 DETAIL_DELAY_SECONDS = 0.8  # base politeness gap between detail fetches (jittered)
 DETAIL_DELAY_JITTER = 0.5  # ±50% so the gap isn't a fixed metronome
-DETAIL_MAX_RETRIES = 2  # retries on HTTP 429
+DETAIL_MAX_RETRIES = 1  # in-call retries on 429 (then the circuit breaker takes over)
 RATE_LIMIT_BACKOFF_SECONDS = 5.0  # base backoff when no Retry-After header
 
 # WG-Gesucht category id -> (URL slug, is_wg)
@@ -234,22 +234,22 @@ async def _fetch_detail(
     )
     for attempt in range(DETAIL_MAX_RETRIES + 1):
         resp = await client.get(_detail_url(offer_id), headers=headers)
-        if resp.status_code == 429 and attempt < DETAIL_MAX_RETRIES:
-            retry_after = resp.headers.get("Retry-After")
-            wait = (
-                float(retry_after)
-                if retry_after and retry_after.isdigit()
-                else http_session.jitter(RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
-            )
-            log.warning("WG-Gesucht: 429 on offer %s, backing off %.1fs", offer_id, wait)
-            await asyncio.sleep(wait)
-            continue
+        if resp.status_code == 429:
+            if attempt < DETAIL_MAX_RETRIES:
+                retry_after = resp.headers.get("Retry-After")
+                wait = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else http_session.jitter(RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
+                )
+                log.warning("WG-Gesucht: 429 on offer %s, backing off %.1fs", offer_id, wait)
+                await asyncio.sleep(wait)
+                continue
+            # Retries exhausted: signal rate-limiting so the caller can trip the
+            # circuit breaker and stop hitting the detail API this cooldown.
+            raise http_session.RateLimited(f"WG-Gesucht detail {offer_id} 429")
         resp.raise_for_status()
         return resp.json()
-    # Retries exhausted on 429: surface the error so the caller skips (and retries
-    # the offer next cycle, since it isn't marked seen).
-    resp.raise_for_status()
-    return resp.json()
 
 
 async def fetch(
@@ -291,18 +291,37 @@ async def fetch(
         if limit is not None:
             stubs = stubs[:limit]
 
-        # 3) Hydrate each via the detail JSON, sequentially.
+        # 3) Hydrate each via the detail JSON, sequentially — unless the detail
+        #    API is in a rate-limit cooldown (circuit breaker), in which case skip
+        #    hydration entirely this cycle so we don't sustain the 429 penalty.
+        breaker = http_session.get_breaker(name)
         listings: list[Listing] = []
-        for index, (offer_id, url) in enumerate(stubs):
-            if index:
-                await asyncio.sleep(
-                    http_session.jitter(DETAIL_DELAY_SECONDS, DETAIL_DELAY_JITTER)
-                )
-            try:
-                detail = await _fetch_detail(client, offer_id, referer=url)
-                listings.append(parse_listing(detail, url))
-            except Exception:
-                log.exception("WG-Gesucht: failed to hydrate offer %s", offer_id)
+        if not breaker.allow():
+            log.warning(
+                "WG-Gesucht: detail API in cooldown (%.0fs left) — skipping hydration",
+                breaker.seconds_left(),
+            )
+        else:
+            for index, (offer_id, url) in enumerate(stubs):
+                if index:
+                    await asyncio.sleep(
+                        http_session.jitter(DETAIL_DELAY_SECONDS, DETAIL_DELAY_JITTER)
+                    )
+                try:
+                    detail = await _fetch_detail(client, offer_id, referer=url)
+                    breaker.record_success()
+                    listings.append(parse_listing(detail, url))
+                except http_session.RateLimited:
+                    if breaker.record_failure():
+                        log.warning(
+                            "WG-Gesucht: detail API rate-limited repeatedly — "
+                            "pausing detail fetches for %.0fs", breaker.cooldown,
+                        )
+                    else:
+                        log.warning("WG-Gesucht: detail API 429 — stopping hydration this cycle")
+                    break  # don't keep hitting a rate-limited endpoint
+                except Exception:
+                    log.exception("WG-Gesucht: failed to hydrate offer %s", offer_id)
 
         log.info("WG-Gesucht: %d offers normalized (%d enumerated)", len(listings), len(seen_ids))
         return listings

@@ -62,6 +62,22 @@ class _Client:
         return self._resp
 
 
+def test_check_all_downgrades_when_detail_circuit_open(monkeypatch):
+    from flatsniper.sources import http_session
+
+    ok_client = _Client(_Resp(200, "offer_list_item aditem serp-core-classified-card-testid"))
+    # Force the WG detail breaker open via an injected clock.
+    br = http_session.CircuitBreaker("wg_gesucht", threshold=1, cooldown=600, clock=lambda: 0.0)
+    br.record_failure()
+    monkeypatch.setitem(http_session._BREAKERS, "wg_gesucht", br)
+
+    results = asyncio.run(health.check_all(get_client=lambda s: ok_client))
+    wg = next(r for r in results if r.name == "WG-Gesucht")
+    assert wg.ok is False and "gedrosselt" in wg.detail
+    # Other portals (no open breaker) stay OK.
+    assert next(r for r in results if r.name == "Immowelt").ok is True
+
+
 def test_check_all_uses_provided_clients_and_handles_errors():
     ok_client = _Client(_Resp(200, "x offer_list_item x aditem serp-core-classified-card-testid"))
     err_client = _Client(raises=ConnectionError("boom"))
