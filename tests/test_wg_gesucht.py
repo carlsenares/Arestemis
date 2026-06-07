@@ -165,11 +165,25 @@ class _Client:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = 0
+        self.last_headers = None
 
     async def get(self, url, headers=None):
+        self.last_headers = headers
         resp = self._responses[self.calls]
         self.calls += 1
         return resp
+
+
+def test_fetch_detail_sends_browser_and_api_headers():
+    client = _Client([_Resp(200, {"offer_id": "1"})])
+    asyncio.run(wg._fetch_detail(client, "1", referer="https://www.wg-gesucht.de/x.1.html"))
+    h = client.last_headers
+    # Identifies as WG-Gesucht's own web client, looks like an XHR from the
+    # offer page (Referer set), and asks for JSON.
+    assert h["X-Client-Id"] == "wg_desktop_website"
+    assert h["Referer"] == "https://www.wg-gesucht.de/x.1.html"
+    assert h["Accept"].startswith("application/json")
+    assert h["Sec-Fetch-Mode"] == "cors"
 
 
 def test_fetch_detail_retries_on_429(monkeypatch):

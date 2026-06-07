@@ -88,6 +88,34 @@ Model + key come from env (`GROQ_API_KEY`, `LLM_MODEL`). Keep all prompt strings
 - On `Generate` callback → calls `draft_application` → replies with the text for copy-paste.
 - `(later)` a `📤 Send it` button for auto-submission.
 
+### Polite / anti-ban HTTP (`sources/http_session.py`)
+Scraping WG-Gesucht/Kleinanzeigen breaks their ToS, so **not getting banned is a
+first-class concern** (a ban kills the tool and risks the user's real accounts).
+For a single user polling ~60s the two levers that matter are keeping the request
+rate low and not looking like an obvious bot; this module centralises the second
+so every adapter shares one disguise:
+- **Coherent browser fingerprint** — a `Profile` pairs a current desktop-Chrome
+  User-Agent with the *matching* `sec-ch-ua*` Client Hints (a UA/hints mismatch is
+  itself a tell). One profile is picked per client and stays stable for its life.
+- **Full, request-appropriate headers** — `Accept`, `Accept-Language: de-DE` first
+  (German portals), and `Sec-Fetch-*` + `Referer` that differ for a top-level page
+  navigation (`navigation_headers`) vs. an XHR to a JSON API (`api_headers`).
+- **HTTP/2 + persistent cookies** — clients negotiate h2 (an HTTP/1.1 request from
+  a "Chrome" UA is suspicious) and keep cookies. `SessionPool` keeps **one
+  long-lived client per source across cycles**, so polling looks like a returning
+  visitor rather than a fresh anonymous hit each minute.
+- **Jitter** — `jitter()` spreads the inter-request delay *and* the poll interval
+  so traffic isn't a metronome (perfectly periodic requests are an easy signature).
+- **Cold-start ramp** — `main._hydrate_limit` grows the per-cycle hydrate cap over
+  the first cycles so a fresh DB's backfill doesn't burst (this historically
+  tripped HTTP 429s).
+
+Combined with the existing rate limiting (small per-detail gap, per-cycle hydrate
+cap, 429 backoff/retry) this is the anti-ban posture for v1. **Deliberately out of
+scope** (heavier, only if bans actually start): TLS/JA3 fingerprint spoofing (would
+need `curl_cffi`) and proxy/IP rotation. Escalate to those only if the measures
+here prove insufficient.
+
 ### Scheduler (`main.py`)
 Async loop: every `poll_interval_seconds`, run all enabled adapters concurrently (`asyncio.gather`), normalize → dedup → filter → classify → notify. Robust to a single source failing (catch per-adapter, log, continue). Runs forever; designed to be supervised by systemd.
 

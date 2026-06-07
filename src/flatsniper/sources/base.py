@@ -38,11 +38,19 @@ class SourceAdapter(Protocol):
         is_new: NewPredicate | None = None,
         *,
         limit: int | None = None,
+        client=None,
     ) -> list[Listing]:
         """Return current listings for the configured search (first page is enough).
 
         `limit` caps how many NEW listings are hydrated this call — the scheduler
         passes it to bound per-cycle request rate. Listings beyond the cap are
         simply not returned (and so not marked seen), to be picked up next cycle.
+
+        `client` is an optional pre-built `httpx.AsyncClient` (the scheduler passes
+        a long-lived, cookie-keeping one from `http_session.SessionPool` so polling
+        looks like one returning browser session — the anti-ban layer). When None,
+        the adapter should build its own via `http_session.new_client()` and close
+        it. Adapters that do their own HTTP should route it through `http_session`
+        so they inherit the shared browser-like headers / jitter.
         """
         ...

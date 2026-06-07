@@ -126,6 +126,15 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
     assert [l.external_id for l in got] == ["w1"]
 
 
+def test_hydrate_limit_ramps_then_caps():
+    # Cold-start ramp: grow over the first cycles, then hold at the cap.
+    assert main._hydrate_limit(1) == 5
+    assert main._hydrate_limit(2) == 10
+    assert main._hydrate_limit(3) == 15
+    assert main._hydrate_limit(4) == main.MAX_HYDRATE_PER_CYCLE
+    assert main._hydrate_limit(99) == main.MAX_HYDRATE_PER_CYCLE
+
+
 def test_max_notify_caps_and_marks_rest_seen(monkeypatch):
     store = Store(":memory:")
     listings = [_flat(str(i)) for i in range(5)]  # all match

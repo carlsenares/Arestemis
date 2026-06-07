@@ -25,16 +25,13 @@ import httpx
 
 from ..config import Config
 from ..models import Listing
+from . import http_session
 from .base import NewPredicate
 
 name = "wg_gesucht"
 log = logging.getLogger(__name__)
 
 BASE = "https://www.wg-gesucht.de"
-USER_AGENT = (
-    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
-)
 # WG-Gesucht city ids + URL slugs. Garching bei München (TUM campus) is the
 # priority area; München is the broader fallback. The areas in config.yaml are
 # mapped to these via alias substrings; query order follows the config.areas
@@ -50,7 +47,8 @@ CITIES: dict[int, dict] = {
     },
 }
 DEFAULT_CITY_ORDER = [400, 90]  # Garching first
-DETAIL_DELAY_SECONDS = 0.8  # politeness gap between detail fetches
+DETAIL_DELAY_SECONDS = 0.8  # base politeness gap between detail fetches (jittered)
+DETAIL_DELAY_JITTER = 0.5  # ±50% so the gap isn't a fixed metronome
 DETAIL_MAX_RETRIES = 2  # retries on HTTP 429
 RATE_LIMIT_BACKOFF_SECONDS = 5.0  # base backoff when no Retry-After header
 
@@ -212,24 +210,36 @@ def _offer_url(html: str, offer_id: str) -> str:
 async def _fetch_list(
     client: httpx.AsyncClient, category: int, city_id: int, city_slug: str
 ) -> list[tuple[str, str]]:
-    resp = await client.get(_list_url(category, city_id, city_slug))
+    # A real visitor reaches a category page from elsewhere on the site, so send
+    # navigation headers with the homepage as Referer.
+    resp = await client.get(
+        _list_url(category, city_id, city_slug),
+        headers=http_session.navigation_headers(referer=f"{BASE}/"),
+    )
     resp.raise_for_status()
     html = resp.text
     return [(oid, _offer_url(html, oid)) for oid in _scrape_offer_ids(html)]
 
 
-async def _fetch_detail(client: httpx.AsyncClient, offer_id: str) -> dict:
-    """Fetch one offer's detail JSON, backing off and retrying on HTTP 429."""
+async def _fetch_detail(
+    client: httpx.AsyncClient, offer_id: str, referer: str | None = None
+) -> dict:
+    """Fetch one offer's detail JSON, backing off and retrying on HTTP 429.
+
+    The detail JSON is the XHR a browser fires from the offer page, so we send
+    XHR/CORS headers with that page as Referer plus WG-Gesucht's own client id.
+    """
+    headers = http_session.api_headers(
+        referer=referer, extra={"X-Client-Id": "wg_desktop_website"}
+    )
     for attempt in range(DETAIL_MAX_RETRIES + 1):
-        resp = await client.get(
-            _detail_url(offer_id), headers={"X-Client-Id": "wg_desktop_website"}
-        )
+        resp = await client.get(_detail_url(offer_id), headers=headers)
         if resp.status_code == 429 and attempt < DETAIL_MAX_RETRIES:
             retry_after = resp.headers.get("Retry-After")
             wait = (
                 float(retry_after)
                 if retry_after and retry_after.isdigit()
-                else RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
+                else http_session.jitter(RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
             )
             log.warning("WG-Gesucht: 429 on offer %s, backing off %.1fs", offer_id, wait)
             await asyncio.sleep(wait)
@@ -253,11 +263,10 @@ async def fetch(
     """Fetch + normalize current WG-Gesucht offers for the configured search."""
     own_client = client is None
     if own_client:
-        client = httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT},
-            timeout=httpx.Timeout(20.0),
-            follow_redirects=True,
-        )
+        # No injected session (e.g. the --once CLI / tests): build a one-shot
+        # polite client. The scheduler instead passes a long-lived client so
+        # cookies + profile persist across cycles (see http_session.SessionPool).
+        client = http_session.new_client()
     cities = cities or _resolve_cities(config)
     categories = _enabled_categories(config)
 
@@ -286,9 +295,11 @@ async def fetch(
         listings: list[Listing] = []
         for index, (offer_id, url) in enumerate(stubs):
             if index:
-                await asyncio.sleep(DETAIL_DELAY_SECONDS)
+                await asyncio.sleep(
+                    http_session.jitter(DETAIL_DELAY_SECONDS, DETAIL_DELAY_JITTER)
+                )
             try:
-                detail = await _fetch_detail(client, offer_id)
+                detail = await _fetch_detail(client, offer_id, referer=url)
                 listings.append(parse_listing(detail, url))
             except Exception:
                 log.exception("WG-Gesucht: failed to hydrate offer %s", offer_id)

@@ -33,7 +33,7 @@ from . import filter as filt
 from .bot import build_application, remember_listing, send_listing
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
-from .sources import wg_gesucht
+from .sources import http_session, wg_gesucht
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -47,14 +47,36 @@ ADAPTERS: dict = {wg_gesucht.name: wg_gesucht}
 # aren't marked seen, so they're picked up on subsequent cycles, newest first.
 MAX_HYDRATE_PER_CYCLE = 20
 
+# Cold-start ramp: a fresh DB would otherwise try to hydrate a full cap of offers
+# in one burst (this historically tripped HTTP 429s). Instead grow the cap over
+# the first cycles — `COLD_START_STEP * cycle`, capped — so the initial backfill
+# is spread out. Harmless in steady state (a populated DB rarely has many new
+# offers per cycle anyway) and reaches the full cap within a few cycles.
+COLD_START_STEP = 5
 
-async def _gather_listings(config: Config, is_new) -> list:
+# Jitter the poll interval by ±this fraction so cycles aren't a fixed metronome
+# (perfectly periodic requests are an easy automated-client signature). Modest,
+# to stay responsive on a ~60s target.
+POLL_INTERVAL_JITTER = 0.15
+
+
+def _hydrate_limit(cycle: int) -> int:
+    """Per-cycle hydrate cap, ramped up over the first cycles (1-indexed)."""
+    return min(MAX_HYDRATE_PER_CYCLE, COLD_START_STEP * max(cycle, 1))
+
+
+async def _gather_listings(config: Config, is_new, *, limit, sessions=None) -> list:
     """Run every enabled adapter concurrently; a failing adapter yields []."""
     adapters = [a for n, a in ADAPTERS.items() if config.sources.get(n)]
 
     async def _safe(adapter):
         try:
-            return await adapter.fetch(config, is_new, limit=MAX_HYDRATE_PER_CYCLE)
+            kwargs = {"limit": limit}
+            # Hand the adapter its long-lived, cookie-keeping client when we have
+            # a pool, so polling looks like one returning session.
+            if sessions is not None:
+                kwargs["client"] = sessions.client_for(adapter.name)
+            return await adapter.fetch(config, is_new, **kwargs)
         except Exception:
             log.exception("adapter %s failed", adapter.name)
             return []
@@ -75,9 +97,12 @@ async def _evaluate(listing, config: Config) -> bool:
     return True
 
 
-async def run_cycle(config: Config, store: Store, notify, *, max_notify=None) -> tuple[int, int]:
+async def run_cycle(
+    config: Config, store: Store, notify, *,
+    max_notify=None, limit=MAX_HYDRATE_PER_CYCLE, sessions=None,
+) -> tuple[int, int]:
     """One poll cycle. Returns (new_listings_seen, notified)."""
-    listings = await _gather_listings(config, store.is_new)
+    listings = await _gather_listings(config, store.is_new, limit=limit, sessions=sessions)
     new_count = 0
     notified = 0
     for listing in listings:
@@ -100,22 +125,35 @@ async def run_cycle(config: Config, store: Store, notify, *, max_notify=None) ->
     return new_count, notified
 
 
-async def scheduler_loop(config, store, notify, *, interval, max_cycles, max_notify) -> None:
+async def scheduler_loop(
+    config, store, notify, *, interval, max_cycles, max_notify, sessions=None
+) -> None:
     cycle = 0
     while max_cycles is None or cycle < max_cycles:
         cycle += 1
+        limit = _hydrate_limit(cycle)
         try:
-            new_count, notified = await run_cycle(config, store, notify, max_notify=max_notify)
-            log.info("cycle %d: %d new listing(s), %d notified", cycle, new_count, notified)
+            new_count, notified = await run_cycle(
+                config, store, notify,
+                max_notify=max_notify, limit=limit, sessions=sessions,
+            )
+            log.info(
+                "cycle %d: %d new listing(s), %d notified (hydrate cap %d)",
+                cycle, new_count, notified, limit,
+            )
         except Exception:
             log.exception("cycle %d crashed", cycle)
         if max_cycles is not None and cycle >= max_cycles:
             break
-        await asyncio.sleep(interval)
+        # Jittered sleep so requests aren't perfectly periodic.
+        await asyncio.sleep(http_session.jitter(interval, POLL_INTERVAL_JITTER))
 
 
 async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_path) -> None:
     store = Store(db_path) if db_path else Store()
+    # One pool of long-lived, cookie-keeping clients shared across cycles — the
+    # anti-ban "returning session" (see http_session.SessionPool).
+    sessions = http_session.SessionPool()
 
     if dry_run:
         async def notify(listing):
@@ -129,8 +167,10 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
             await scheduler_loop(
                 config, store, notify,
                 interval=interval, max_cycles=max_cycles, max_notify=max_notify,
+                sessions=sessions,
             )
         finally:
+            await sessions.aclose()
             store.close()
         return
 
@@ -145,15 +185,17 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
     async with app:
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        log.info("FlatSniper running — polling every %ss. Ctrl+C to stop.", interval)
+        log.info("FlatSniper running — polling every ~%ss. Ctrl+C to stop.", interval)
         try:
             await scheduler_loop(
                 config, store, notify,
                 interval=interval, max_cycles=max_cycles, max_notify=max_notify,
+                sessions=sessions,
             )
         finally:
             await app.updater.stop()
             await app.stop()
+            await sessions.aclose()
             store.close()
 
 
