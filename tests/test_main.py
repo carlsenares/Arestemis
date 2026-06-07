@@ -126,9 +126,8 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
     assert [l.external_id for l in got] == ["w1"]
 
 
-def test_both_sources_registered():
-    # M7: Kleinanzeigen joins WG-Gesucht in the live adapter registry.
-    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen"}
+def test_sources_registered():
+    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen", "immowelt"}
 
 
 def test_scheduler_skips_scan_while_paused(monkeypatch):

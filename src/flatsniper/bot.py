@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 SOURCE_LABELS = {
     "wg_gesucht": "WG-Gesucht",
     "kleinanzeigen": "Kleinanzeigen",
+    "immowelt": "Immowelt",
     "immoscout": "ImmoScout24",
 }
 
@@ -76,7 +77,14 @@ def format_listing_message(listing: Listing) -> tuple[str, InlineKeyboardMarkup]
 
     facts: list[str] = []
     if listing.rent_warm is not None:
-        facts.append(f"💶 {listing.rent_warm} € warm")
+        if (listing.raw or {}).get("rent_estimated"):
+            cold = listing.raw.get("rent_cold")
+            facts.append(
+                f"💶 ~{listing.rent_warm} € warm (gesch.)"
+                + (f", {cold} € kalt" if cold else "")
+            )
+        else:
+            facts.append(f"💶 {listing.rent_warm} € warm")
     if listing.sqm is not None:
         facts.append(f"📐 {listing.sqm:g} m²")
     if listing.rooms is not None:

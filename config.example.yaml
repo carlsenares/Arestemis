@@ -33,6 +33,7 @@ wg_rule:
 sources:
   wg_gesucht: true
   kleinanzeigen: true
+  immowelt: true             # München only, card-only (detail pages are captcha-walled)
   immoscout: false           # later adapter; heavy anti-bot
 
 poll_interval_seconds: 60

@@ -61,6 +61,16 @@ def test_format_message_escapes_html():
     assert "<script>" not in text
 
 
+def test_format_message_labels_estimated_rent():
+    text, _ = format_listing_message(
+        _listing(source="immowelt", rent_warm=1190,
+                 raw={"rent_estimated": True, "rent_cold": 1050})
+    )
+    assert "~1190 € warm (gesch.)" in text
+    assert "1050 € kalt" in text
+    assert "Immowelt" in text
+
+
 def test_format_message_marks_wg():
     text, _ = format_listing_message(_listing(is_wg=True, wg_size=2))
     assert "WG (2er)" in text

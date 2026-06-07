@@ -33,14 +33,18 @@ from . import filter as filt
 from .bot import PAUSED_META_KEY, build_application, remember_listing, send_listing
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
-from .sources import http_session, kleinanzeigen, wg_gesucht
+from .sources import http_session, immowelt, kleinanzeigen, wg_gesucht
 from .store import Store
 
 log = logging.getLogger(__name__)
 
 # Source adapters implementing fetch(). The SessionPool hands each its own
 # long-lived, cookie-keeping client; the store dedups per (source, external_id).
-ADAPTERS: dict = {wg_gesucht.name: wg_gesucht, kleinanzeigen.name: kleinanzeigen}
+ADAPTERS: dict = {
+    wg_gesucht.name: wg_gesucht,
+    kleinanzeigen.name: kleinanzeigen,
+    immowelt.name: immowelt,
+}
 
 # Max NEW offers each adapter hydrates per cycle. Bounds request rate (politeness
 # + avoids rate-limit bursts on cold start) while leaving ample headroom for the
