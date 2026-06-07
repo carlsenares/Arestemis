@@ -126,6 +126,11 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
     assert [l.external_id for l in got] == ["w1"]
 
 
+def test_both_sources_registered():
+    # M7: Kleinanzeigen joins WG-Gesucht in the live adapter registry.
+    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen"}
+
+
 def test_hydrate_limit_ramps_then_caps():
     # Cold-start ramp: grow over the first cycles, then hold at the cap.
     assert main._hydrate_limit(1) == 5
