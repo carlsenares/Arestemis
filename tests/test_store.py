@@ -70,3 +70,16 @@ def test_persists_across_reopen(tmp_path):
     with Store(db) as store2:
         assert store2.is_new(listing.source, listing.external_id) is False
         assert store2.was_notified(listing.source, listing.external_id) is True
+
+
+def test_meta_get_set_and_persists(tmp_path):
+    """Meta key/value (e.g. the paused flag) round-trips and survives a restart."""
+    db = tmp_path / "t.db"
+    with Store(db) as store:
+        assert store.get_meta("scanning_paused", "0") == "0"  # default
+        store.set_meta("scanning_paused", "1")
+        store.set_meta("scanning_paused", "1")  # upsert, no error
+        assert store.get_meta("scanning_paused") == "1"
+
+    with Store(db) as store2:
+        assert store2.get_meta("scanning_paused") == "1"

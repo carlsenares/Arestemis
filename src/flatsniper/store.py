@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS seen_listings (
     notified    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (source, external_id)
 );
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -85,6 +89,21 @@ class Store:
             (source, external_id),
         ).fetchone()
         return bool(row["notified"]) if row else False
+
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        """Read a small persisted key/value (e.g. the paused flag). Survives restarts."""
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()

@@ -131,6 +131,37 @@ def test_both_sources_registered():
     assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen"}
 
 
+def test_scheduler_skips_scan_while_paused(monkeypatch):
+    calls = []
+
+    async def fake_run_cycle(config, store, notify, *, max_notify, limit, sessions):
+        calls.append(limit)
+        return (0, 0)
+
+    monkeypatch.setattr(main, "run_cycle", fake_run_cycle)
+    monkeypatch.setattr(main.asyncio, "sleep", _noop_sleep())
+
+    # Paused the whole time -> never scans.
+    asyncio.run(main.scheduler_loop(
+        _config(), None, None,
+        interval=0, max_cycles=3, max_notify=None, is_paused=lambda: True,
+    ))
+    assert calls == []
+
+    # Never paused -> scans every cycle; ramp counts scanning cycles only.
+    asyncio.run(main.scheduler_loop(
+        _config(), None, None,
+        interval=0, max_cycles=3, max_notify=None, is_paused=lambda: False,
+    ))
+    assert calls == [5, 10, 15]
+
+
+def _noop_sleep():
+    async def _sleep(_seconds):
+        return None
+    return _sleep
+
+
 def test_hydrate_limit_ramps_then_caps():
     # Cold-start ramp: grow over the first cycles, then hold at the cap.
     assert main._hydrate_limit(1) == 5

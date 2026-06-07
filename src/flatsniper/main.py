@@ -30,7 +30,7 @@ import sys
 from telegram import Update
 
 from . import filter as filt
-from .bot import build_application, remember_listing, send_listing
+from .bot import PAUSED_META_KEY, build_application, remember_listing, send_listing
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
 from .sources import http_session, kleinanzeigen, wg_gesucht
@@ -127,23 +127,30 @@ async def run_cycle(
 
 
 async def scheduler_loop(
-    config, store, notify, *, interval, max_cycles, max_notify, sessions=None
+    config, store, notify, *, interval, max_cycles, max_notify, sessions=None, is_paused=None
 ) -> None:
     cycle = 0
+    scans = 0  # only scanning cycles count toward the cold-start ramp
     while max_cycles is None or cycle < max_cycles:
         cycle += 1
-        limit = _hydrate_limit(cycle)
-        try:
-            new_count, notified = await run_cycle(
-                config, store, notify,
-                max_notify=max_notify, limit=limit, sessions=sessions,
-            )
-            log.info(
-                "cycle %d: %d new listing(s), %d notified (hydrate cap %d)",
-                cycle, new_count, notified, limit,
-            )
-        except Exception:
-            log.exception("cycle %d crashed", cycle)
+        if is_paused is not None and is_paused():
+            # Paused from the phone: keep the loop (and Telegram polling) alive
+            # but don't touch the portals.
+            log.info("cycle %d: paused, skipping scan", cycle)
+        else:
+            scans += 1
+            limit = _hydrate_limit(scans)
+            try:
+                new_count, notified = await run_cycle(
+                    config, store, notify,
+                    max_notify=max_notify, limit=limit, sessions=sessions,
+                )
+                log.info(
+                    "cycle %d: %d new listing(s), %d notified (hydrate cap %d)",
+                    cycle, new_count, notified, limit,
+                )
+            except Exception:
+                log.exception("cycle %d crashed", cycle)
         if max_cycles is not None and cycle >= max_cycles:
             break
         # Jittered sleep so requests aren't perfectly periodic.
@@ -175,9 +182,14 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
             store.close()
         return
 
-    # Live run: bot polls (for the Generate button) in the same loop.
+    # Live run: bot polls (for the Generate button + control commands) in the
+    # same loop.
     app = build_application(config)
     chat_id = config.secrets.telegram_chat_id
+    # Share the store with the bot (for the persisted pause flag) and restore the
+    # last paused state so a restart honors a phone "/stop".
+    app.bot_data["store"] = store
+    app.bot_data["paused"] = store.get_meta(PAUSED_META_KEY, "0") == "1"
 
     async def notify(listing):
         remember_listing(app.bot_data, listing)
@@ -186,12 +198,15 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
     async with app:
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        log.info("FlatSniper running — polling every ~%ss. Ctrl+C to stop.", interval)
+        log.info(
+            "FlatSniper running — polling every ~%ss (%s). Ctrl+C to stop.",
+            interval, "paused" if app.bot_data["paused"] else "scanning",
+        )
         try:
             await scheduler_loop(
                 config, store, notify,
                 interval=interval, max_cycles=max_cycles, max_notify=max_notify,
-                sessions=sessions,
+                sessions=sessions, is_paused=lambda: bool(app.bot_data.get("paused")),
             )
         finally:
             await app.updater.stop()

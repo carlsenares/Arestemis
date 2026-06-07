@@ -19,12 +19,18 @@ import asyncio
 import html
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
 )
 
@@ -139,6 +145,104 @@ async def on_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await note.edit_text(text or "(leer)")
 
 
+# --- Remote control (start/stop scanning from the phone) -------------------
+#
+# "Stopping" pauses portal scanning but keeps the process (and Telegram polling)
+# alive, so the phone can still resume it — killing the OS process would make the
+# bot unreachable. The flag is mirrored to the store so a reboot/crash-restart
+# respects it. The Generate button keeps working while paused.
+
+PAUSED_META_KEY = "scanning_paused"
+
+# Commands shown in the phone's command menu (set via set_my_commands).
+BOT_COMMANDS = [
+    BotCommand("stop", "⏸ Pause scanning (no new alerts)"),
+    BotCommand("start", "▶️ Resume scanning"),
+    BotCommand("status", "ℹ️ Show whether scanning is active"),
+    BotCommand("help", "Show available commands"),
+]
+
+
+def is_paused(bot_data: dict) -> bool:
+    return bool(bot_data.get("paused"))
+
+
+def set_paused(bot_data: dict, value: bool) -> None:
+    """Flip the in-memory flag and persist it so it survives a restart."""
+    bot_data["paused"] = value
+    store = bot_data.get("store")
+    if store is not None:
+        store.set_meta(PAUSED_META_KEY, "1" if value else "0")
+
+
+def _is_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Only the configured chat may control the bot."""
+    config: Config | None = context.bot_data.get("config")
+    chat = update.effective_chat
+    if config is None or chat is None:
+        return False
+    return str(chat.id) == str(config.secrets.telegram_chat_id)
+
+
+def _status_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    config: Config | None = context.bot_data.get("config")
+    paused = is_paused(context.bot_data)
+    state = "⏸ <b>pausiert</b>" if paused else "▶️ <b>aktiv</b>"
+    lines = [f"FlatSniper: {state}"]
+    if config is not None:
+        sources = [SOURCE_LABELS.get(n, n) for n, on in config.sources.items() if on]
+        lines.append(f"⏱ Intervall: {config.poll_interval_seconds}s")
+        lines.append(f"🔎 Quellen: {', '.join(sources) or '—'}")
+    return "\n".join(lines)
+
+
+async def on_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    set_paused(context.bot_data, True)
+    log.info("Scanning paused via Telegram")
+    await update.message.reply_text(
+        "⏸ Scanning pausiert. Keine neuen Benachrichtigungen, bis du /start sendest."
+    )
+
+
+async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    was_paused = is_paused(context.bot_data)
+    set_paused(context.bot_data, False)
+    log.info("Scanning resumed via Telegram")
+    prefix = "▶️ Scanning aktiv.\n\n" if was_paused else ""
+    await update.message.reply_text(
+        prefix + _status_text(context), parse_mode=ParseMode.HTML
+    )
+
+
+async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    await update.message.reply_text(_status_text(context), parse_mode=ParseMode.HTML)
+
+
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    await update.message.reply_text(
+        "Befehle:\n"
+        "/stop — Scanning pausieren\n"
+        "/start — Scanning fortsetzen\n"
+        "/status — Status anzeigen\n"
+        "/help — diese Hilfe"
+    )
+
+
+def _register_control_handlers(app: Application) -> None:
+    app.add_handler(CommandHandler("stop", on_stop))
+    app.add_handler(CommandHandler("start", on_start))
+    app.add_handler(CommandHandler("status", on_status))
+    app.add_handler(CommandHandler("help", on_help))
+
+
 def sample_listing() -> Listing:
     """A hardcoded listing for --test-message."""
     return Listing(
@@ -155,13 +259,21 @@ def sample_listing() -> Listing:
 
 
 def build_application(config: Config, post_init=None) -> Application:
-    """Build the PTB Application with the Generate callback wired up."""
-    builder = ApplicationBuilder().token(config.secrets.telegram_bot_token)
-    if post_init is not None:
-        builder = builder.post_init(post_init)
-    app = builder.build()
+    """Build the PTB Application with the Generate callback + control commands."""
+
+    async def _post_init(application: Application) -> None:
+        # Populate the phone's command menu, then run any caller-supplied hook.
+        try:
+            await application.bot.set_my_commands(BOT_COMMANDS)
+        except Exception:
+            log.exception("Failed to set bot command menu")
+        if post_init is not None:
+            await post_init(application)
+
+    app = ApplicationBuilder().token(config.secrets.telegram_bot_token).post_init(_post_init).build()
     app.bot_data["config"] = config
     app.add_handler(CallbackQueryHandler(on_generate, pattern=rf"^{_CALLBACK_PREFIX}:"))
+    _register_control_handlers(app)
     return app
 
 

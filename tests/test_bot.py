@@ -109,3 +109,73 @@ def test_remember_listing():
     bot_data = {}
     bot.remember_listing(bot_data, _listing())
     assert bot_data["listings"]["wg_gesucht:abc123"].title == "2-Zimmer-Wohnung"
+
+
+# --- remote control (start/stop scanning) ----------------------------------
+
+
+class _FakeStore:
+    def __init__(self):
+        self.meta = {}
+
+    def set_meta(self, key, value):
+        self.meta[key] = value
+
+    def get_meta(self, key, default=None):
+        return self.meta.get(key, default)
+
+
+def _control_ctx(owner_id="555", chat_id=555, store=None):
+    config = MagicMock()
+    config.secrets.telegram_chat_id = owner_id
+    config.poll_interval_seconds = 60
+    config.sources = {"wg_gesucht": True, "kleinanzeigen": True}
+    context = MagicMock()
+    context.bot_data = {"config": config}
+    if store is not None:
+        context.bot_data["store"] = store
+    update = MagicMock()
+    update.effective_chat.id = chat_id
+    update.message.reply_text = AsyncMock()
+    return update, context
+
+
+def test_set_paused_persists_to_store():
+    store = _FakeStore()
+    bot_data = {"store": store}
+    bot.set_paused(bot_data, True)
+    assert bot_data["paused"] is True
+    assert store.get_meta(bot.PAUSED_META_KEY) == "1"
+    bot.set_paused(bot_data, False)
+    assert store.get_meta(bot.PAUSED_META_KEY) == "0"
+
+
+def test_stop_then_start_toggles_flag():
+    store = _FakeStore()
+    update, context = _control_ctx(store=store)
+
+    asyncio.run(bot.on_stop(update, context))
+    assert bot.is_paused(context.bot_data) is True
+    assert store.get_meta(bot.PAUSED_META_KEY) == "1"
+    update.message.reply_text.assert_awaited_once()
+
+    asyncio.run(bot.on_start(update, context))
+    assert bot.is_paused(context.bot_data) is False
+    assert store.get_meta(bot.PAUSED_META_KEY) == "0"
+
+
+def test_control_ignores_non_owner():
+    store = _FakeStore()
+    # chat id differs from the configured owner -> command ignored.
+    update, context = _control_ctx(owner_id="555", chat_id=999, store=store)
+    asyncio.run(bot.on_stop(update, context))
+    assert "paused" not in context.bot_data
+    update.message.reply_text.assert_not_awaited()
+
+
+def test_status_reports_state():
+    update, context = _control_ctx()
+    context.bot_data["paused"] = True
+    asyncio.run(bot.on_status(update, context))
+    msg = update.message.reply_text.call_args.args[0]
+    assert "pausiert" in msg
