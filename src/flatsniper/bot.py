@@ -34,6 +34,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from . import health
 from .config import Config, load_config
 from .llm.provider import draft_application
 from .models import Listing
@@ -173,6 +174,7 @@ BOT_COMMANDS = [
     BotCommand("stop", "⏸ Pause scanning (no new alerts)"),
     BotCommand("start", "▶️ Resume scanning"),
     BotCommand("status", "ℹ️ Show whether scanning is active"),
+    BotCommand("health", "🩺 Check if any portal is blocking us"),
     BotCommand("help", "Show available commands"),
 ]
 
@@ -238,6 +240,19 @@ async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_status_text(context), parse_mode=ParseMode.HTML)
 
 
+async def on_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Live-probe every portal and report whether any is blocking us."""
+    if not _is_owner(update, context):
+        return
+    note = await update.message.reply_text("🩺 Prüfe Portale …")
+    try:
+        results = await health.check_all()
+        await note.edit_text(health.format_report(results))
+    except Exception:
+        log.exception("health check failed")
+        await note.edit_text("⚠️ Health-Check fehlgeschlagen.")
+
+
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update, context):
         return
@@ -246,6 +261,7 @@ async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/stop — Scanning pausieren\n"
         "/start — Scanning fortsetzen\n"
         "/status — Status anzeigen\n"
+        "/health — Portale auf Sperren prüfen\n"
         "/help — diese Hilfe"
     )
 
@@ -254,6 +270,7 @@ def _register_control_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("stop", on_stop))
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("status", on_status))
+    app.add_handler(CommandHandler("health", on_health))
     app.add_handler(CommandHandler("help", on_help))
 
 

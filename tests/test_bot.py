@@ -184,6 +184,25 @@ def test_control_ignores_non_owner():
     update.message.reply_text.assert_not_awaited()
 
 
+def test_on_health_probes_and_reports(monkeypatch):
+    from flatsniper.health import PortalHealth
+
+    async def fake_check_all(get_client=None):
+        return [PortalHealth("WG-Gesucht", True, "OK"),
+                PortalHealth("Kleinanzeigen", False, "BLOCKED (403)")]
+
+    monkeypatch.setattr(bot.health, "check_all", fake_check_all)
+    note = MagicMock()
+    note.edit_text = AsyncMock()
+    update, context = _control_ctx()
+    update.message.reply_text = AsyncMock(return_value=note)
+
+    asyncio.run(bot.on_health(update, context))
+
+    report = note.edit_text.call_args.args[0]
+    assert "WG-Gesucht: OK" in report and "BLOCKED (403)" in report
+
+
 def test_status_reports_state():
     update, context = _control_ctx()
     context.bot_data["paused"] = True

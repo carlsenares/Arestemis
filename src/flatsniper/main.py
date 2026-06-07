@@ -30,6 +30,7 @@ import sys
 from telegram import Update
 
 from . import filter as filt
+from . import health
 from .bot import PAUSED_META_KEY, build_application, remember_listing, send_listing
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
@@ -63,6 +64,11 @@ COLD_START_STEP = 5
 # (perfectly periodic requests are an easy automated-client signature). Modest,
 # to stay responsive on a ~60s target.
 POLL_INTERVAL_JITTER = 0.15
+
+# Run the ban/health watchdog every N scanning cycles (~N minutes at 60s). It
+# probes each portal and alerts the phone on a transition to blocked/recovered,
+# reusing the live SessionPool clients so the probe looks like normal traffic.
+WATCHDOG_EVERY_CYCLES = 20
 
 
 def _hydrate_limit(cycle: int) -> int:
@@ -130,11 +136,29 @@ async def run_cycle(
     return new_count, notified
 
 
+async def _watchdog(sessions, alert, health_state) -> None:
+    """Probe portals; alert the phone on a block/recovery transition."""
+    try:
+        results = await health.check_all(get_client=sessions.client_for)
+    except Exception:
+        log.exception("watchdog health check failed")
+        return
+    for msg in health.transitions(health_state, results):
+        log.warning("watchdog: %s", msg)
+        try:
+            await alert(msg)
+        except Exception:
+            log.exception("watchdog alert failed")
+    health_state.update({r.name: r.ok for r in results})
+
+
 async def scheduler_loop(
-    config, store, notify, *, interval, max_cycles, max_notify, sessions=None, is_paused=None
+    config, store, notify, *, interval, max_cycles, max_notify,
+    sessions=None, is_paused=None, alert=None,
 ) -> None:
     cycle = 0
     scans = 0  # only scanning cycles count toward the cold-start ramp
+    health_state: dict[str, bool] = {}
     while max_cycles is None or cycle < max_cycles:
         cycle += 1
         if is_paused is not None and is_paused():
@@ -155,6 +179,9 @@ async def scheduler_loop(
                 )
             except Exception:
                 log.exception("cycle %d crashed", cycle)
+            # Periodic ban watchdog (live runs only: needs sessions + an alerter).
+            if alert is not None and sessions is not None and scans % WATCHDOG_EVERY_CYCLES == 0:
+                await _watchdog(sessions, alert, health_state)
         if max_cycles is not None and cycle >= max_cycles:
             break
         # Jittered sleep so requests aren't perfectly periodic.
@@ -199,6 +226,10 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
         remember_listing(app.bot_data, listing)
         await send_listing(app.bot, chat_id, listing)
 
+    async def alert(text):
+        # Plain push for watchdog ban/recovery notices.
+        await app.bot.send_message(chat_id, text)
+
     async with app:
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
@@ -211,6 +242,7 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
                 config, store, notify,
                 interval=interval, max_cycles=max_cycles, max_notify=max_notify,
                 sessions=sessions, is_paused=lambda: bool(app.bot_data.get("paused")),
+                alert=alert,
             )
         finally:
             await app.updater.stop()
