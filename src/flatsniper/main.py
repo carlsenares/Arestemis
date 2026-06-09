@@ -30,11 +30,17 @@ import sys
 from telegram import Update
 
 from . import filter as filt
-from . import health
-from .bot import PAUSED_META_KEY, build_application, remember_listing, send_listing
+from . import health, monitor
+from .bot import (
+    PAUSED_META_KEY,
+    SOURCE_LABELS,
+    build_application,
+    remember_listing,
+    send_listing,
+)
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
-from .sources import http_session, immowelt, kleinanzeigen, wg_gesucht
+from .sources import http_session, immoscout, immowelt, kleinanzeigen, wg_gesucht
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -45,6 +51,7 @@ ADAPTERS: dict = {
     wg_gesucht.name: wg_gesucht,
     kleinanzeigen.name: kleinanzeigen,
     immowelt.name: immowelt,
+    immoscout.name: immoscout,
 }
 
 # Max NEW offers each adapter hydrates per cycle. Bounds request rate (politeness
@@ -65,19 +72,18 @@ COLD_START_STEP = 5
 # to stay responsive on a ~60s target.
 POLL_INTERVAL_JITTER = 0.15
 
-# Run the ban/health watchdog every N scanning cycles (~N minutes at 60s). It
-# probes each portal and alerts the phone on a transition to blocked/recovered,
-# reusing the live SessionPool clients so the probe looks like normal traffic.
-WATCHDOG_EVERY_CYCLES = 20
-
-
 def _hydrate_limit(cycle: int) -> int:
     """Per-cycle hydrate cap, ramped up over the first cycles (1-indexed)."""
     return min(MAX_HYDRATE_PER_CYCLE, COLD_START_STEP * max(cycle, 1))
 
 
-async def _gather_listings(config: Config, is_new, *, limit, sessions=None) -> list:
-    """Run every enabled adapter concurrently; a failing adapter yields []."""
+async def _gather_listings(config: Config, is_new, *, limit, sessions=None, stats=None) -> list:
+    """Run every enabled adapter concurrently; a failing adapter yields [].
+
+    When `stats` is given, each adapter's raw card count lands in
+    `stats[name]["enumerated"]` so the scrape watchdog can see whether we got any
+    cards at all this cycle (a missing key means the adapter never reported one —
+    treated as trouble)."""
     adapters = [a for n, a in ADAPTERS.items() if config.sources.get(n)]
 
     async def _safe(adapter):
@@ -87,6 +93,10 @@ async def _gather_listings(config: Config, is_new, *, limit, sessions=None) -> l
             # a pool, so polling looks like one returning session.
             if sessions is not None:
                 kwargs["client"] = sessions.client_for(adapter.name)
+            if stats is not None:
+                src_stats: dict = {}
+                stats[adapter.name] = src_stats
+                kwargs["stats"] = src_stats
             return await adapter.fetch(config, is_new, **kwargs)
         except Exception:
             log.exception("adapter %s failed", adapter.name)
@@ -110,10 +120,13 @@ async def _evaluate(listing, config: Config) -> bool:
 
 async def run_cycle(
     config: Config, store: Store, notify, *,
-    max_notify=None, limit=MAX_HYDRATE_PER_CYCLE, sessions=None,
+    max_notify=None, limit=MAX_HYDRATE_PER_CYCLE, sessions=None, stats=None,
 ) -> tuple[int, int]:
-    """One poll cycle. Returns (new_listings_seen, notified)."""
-    listings = await _gather_listings(config, store.is_new, limit=limit, sessions=sessions)
+    """One poll cycle. Returns (new_listings_seen, notified). When `stats` is
+    given, per-source card counts are recorded into it for the scrape watchdog."""
+    listings = await _gather_listings(
+        config, store.is_new, limit=limit, sessions=sessions, stats=stats
+    )
     new_count = 0
     notified = 0
     for listing in listings:
@@ -136,20 +149,30 @@ async def run_cycle(
     return new_count, notified
 
 
-async def _watchdog(sessions, alert, health_state) -> None:
-    """Probe portals; alert the phone on a block/recovery transition."""
-    try:
-        results = await health.check_all(get_client=sessions.client_for)
-    except Exception:
-        log.exception("watchdog health check failed")
-        return
-    for msg in health.transitions(health_state, results):
-        log.warning("watchdog: %s", msg)
-        try:
-            await alert(msg)
-        except Exception:
-            log.exception("watchdog alert failed")
-    health_state.update({r.name: r.ok for r in results})
+async def _diagnose_source(source: str) -> tuple[str, str]:
+    """Classify why a source stopped returning cards, with a *fresh* probe.
+
+    Live session already failed (that's why we're here); if a fresh session gets
+    cards, the block is on our session (self-healable). Otherwise it's the portal
+    (hard) or a network/TLS error."""
+    res = await health.probe(source)
+    if res.ok:
+        return monitor.SESSION, res.detail
+    if res.state == health.ERROR:
+        return monitor.ERROR, res.detail
+    return monitor.PORTAL, res.detail
+
+
+async def _run_scrape_watch(watch, config, cycle_stats, sessions, alert) -> None:
+    """Feed each enabled source's card count to the watch (detect/heal/notify)."""
+    for name in ADAPTERS:
+        if not config.sources.get(name):
+            continue
+        enumerated = (cycle_stats.get(name) or {}).get("enumerated")
+        await watch.observe(
+            name, SOURCE_LABELS.get(name, name), enumerated,
+            sessions=sessions, alert=alert, diagnose=_diagnose_source,
+        )
 
 
 async def scheduler_loop(
@@ -158,7 +181,10 @@ async def scheduler_loop(
 ) -> None:
     cycle = 0
     scans = 0  # only scanning cycles count toward the cold-start ramp
-    health_state: dict[str, bool] = {}
+    watch = monitor.ScrapeWatch()
+    # The scrape watchdog needs both a session pool (to rotate/heal) and an
+    # alerter (to notify) — i.e. a live run, not dry-run/tests.
+    monitoring = alert is not None and sessions is not None
     while max_cycles is None or cycle < max_cycles:
         cycle += 1
         if is_paused is not None and is_paused():
@@ -168,20 +194,24 @@ async def scheduler_loop(
         else:
             scans += 1
             limit = _hydrate_limit(scans)
+            cycle_stats: dict = {} if monitoring else None
+            run_kwargs = dict(max_notify=max_notify, limit=limit, sessions=sessions)
+            if monitoring:
+                run_kwargs["stats"] = cycle_stats
+            crashed = False
             try:
-                new_count, notified = await run_cycle(
-                    config, store, notify,
-                    max_notify=max_notify, limit=limit, sessions=sessions,
-                )
+                new_count, notified = await run_cycle(config, store, notify, **run_kwargs)
                 log.info(
                     "cycle %d: %d new listing(s), %d notified (hydrate cap %d)",
                     cycle, new_count, notified, limit,
                 )
             except Exception:
                 log.exception("cycle %d crashed", cycle)
-            # Periodic ban watchdog (live runs only: needs sessions + an alerter).
-            if alert is not None and sessions is not None and scans % WATCHDOG_EVERY_CYCLES == 0:
-                await _watchdog(sessions, alert, health_state)
+                crashed = True
+            # Per-cycle scrape watchdog: detect a source going dark, classify,
+            # self-heal a session block, notify on break/recovery.
+            if monitoring and not crashed:
+                await _run_scrape_watch(watch, config, cycle_stats, sessions, alert)
         if max_cycles is not None and cycle >= max_cycles:
             break
         # Jittered sleep so requests aren't perfectly periodic.
@@ -220,6 +250,7 @@ async def _run(config: Config, *, dry_run, interval, max_cycles, max_notify, db_
     # Share the store with the bot (for the persisted pause flag) and restore the
     # last paused state so a restart honors a phone "/stop".
     app.bot_data["store"] = store
+    app.bot_data["sessions"] = sessions  # lets /health probe the live sessions
     app.bot_data["paused"] = store.get_meta(PAUSED_META_KEY, "0") == "1"
 
     async def notify(listing):

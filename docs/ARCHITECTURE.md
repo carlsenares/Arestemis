@@ -12,7 +12,7 @@ Be the **first** to apply to a matching Munich listing. Detect new listings with
                        │  fetch
         ┌──────────────┼───────────────┐
         ▼              ▼                ▼
- ┌────────────┐ ┌────────────┐   (immoscout: later)
+ ┌────────────┐ ┌────────────┐   (+ immowelt, immoscout)
  │ WG-Gesucht │ │Kleinanzeig.│   each = a "source adapter"
  │  adapter   │ │  adapter   │
  └─────┬──────┘ └─────┬──────┘
@@ -63,7 +63,11 @@ class Listing:
 ```
 - **`wg_gesucht.py`** — use the WG-Gesucht **mobile JSON API** (reverse-engineered) rather than HTML; more stable. Build a search query from `config.yaml`.
 - **`kleinanzeigen.py`** — HTML + BeautifulSoup over the Munich apartment category, filtered by criteria.
-- **`immoscout.py`** — stub only in v1 (documented later adapter).
+- **`immoscout.py`** — the **mobile-app API** (`api.mobile.immobilienscout24.de`),
+  not the website: ImmoScout's website captcha-walls datacenter IPs (HTTP 401), but
+  the app API answers from the same IP with no auth, just an app identity (see the
+  anti-ban section). List-only (one `POST /search/list` per region per cycle, no
+  detail fetch); warm rent is estimated from Kaltmiete like Immowelt.
 
 Adding a portal = adding one file implementing the interface. Keep it that clean.
 
@@ -111,10 +115,19 @@ so every adapter shares one disguise:
   tripped HTTP 429s).
 
 Combined with the existing rate limiting (small per-detail gap, per-cycle hydrate
-cap, 429 backoff/retry) this is the anti-ban posture for v1. **Deliberately out of
-scope** (heavier, only if bans actually start): TLS/JA3 fingerprint spoofing (would
-need `curl_cffi`) and proxy/IP rotation. Escalate to those only if the measures
-here prove insufficient.
+cap, 429 backoff/retry) this is the anti-ban posture for v1. Two heavier levers,
+added as portals got harder:
+- **Per-source identity.** Most sources share the browser disguise above, but a
+  source whose only viable surface is a native-app API (ImmoScout) talks to it
+  wearing that *app's* identity instead — its own User-Agent + `Accept` over a
+  mobile TLS fingerprint, no browser Client Hints (`http_session.IDENTITIES`).
+- **Optional per-source proxy.** The datacenter IP is the dominant ban risk for the
+  hardest portals. `http_session.proxy_for` lets any source be routed through a
+  proxy set in `.env` (e.g. `IMMOSCOUT_PROXY`) with no code change; unset = direct
+  (today's default — ImmoScout's app API works direct from the box).
+
+Still **out of scope** unless bans actually start: rotating proxy *pools* and
+captcha-solving services.
 
 ### Scheduler (`main.py`)
 Async loop: every `poll_interval_seconds`, run all enabled adapters concurrently (`asyncio.gather`), normalize → dedup → filter → classify → notify. Robust to a single source failing (catch per-adapter, log, continue). Runs forever; designed to be supervised by systemd.

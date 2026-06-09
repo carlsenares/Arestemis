@@ -15,8 +15,10 @@
   Also: an *instant templated* message can read as a bot and lose. Keep this opt-in,
   behind a high-confidence filter, and only after v1 is trusted. Human-sent in <3 min
   often beats bot-sent.
-- **ImmoScout24 adapter.** Biggest single-flat portal, but heavy anti-bot and no free
-  listings API — expect to fight detection. Add as an isolated adapter.
+- ~~**ImmoScout24 adapter.**~~ **Done.** Biggest single-flat portal. The website
+  captcha-walls datacenter IPs, so the adapter uses the **mobile-app API**
+  (`api.mobile.immobilienscout24.de`) wearing an app identity — reachable from the
+  box with no auth. List-only (München + Garching). See `sources/immoscout.py`.
 - **Multi-user (friends).** Replace single chat id with a users table
   (`chat_id -> {criteria, about_me}`); fan out matches per user. Friends just Start the
   bot. No domain needed — still long-polling.

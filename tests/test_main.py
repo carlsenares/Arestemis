@@ -127,7 +127,7 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
 
 
 def test_sources_registered():
-    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen", "immowelt"}
+    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen", "immowelt", "immoscout"}
 
 
 def test_scheduler_skips_scan_while_paused(monkeypatch):
@@ -168,6 +168,81 @@ def test_hydrate_limit_ramps_then_caps():
     assert main._hydrate_limit(3) == 15
     assert main._hydrate_limit(4) == main.MAX_HYDRATE_PER_CYCLE
     assert main._hydrate_limit(99) == main.MAX_HYDRATE_PER_CYCLE
+
+
+class _FakeSessions:
+    def __init__(self):
+        self.rotated = []
+
+    def client_for(self, source):
+        return object()
+
+    async def rotate(self, source):
+        self.rotated.append(source)
+
+
+def _counting_adapter(name, listings, enumerated):
+    """Fake adapter that reports a raw card count via stats, like the real ones."""
+    async def fetch(config, is_new=None, *, limit=None, client=None, stats=None):
+        if stats is not None:
+            stats["enumerated"] = enumerated
+        items = [l for l in listings if is_new is None or is_new(l.source, l.external_id)]
+        return items[:limit] if limit is not None else items
+    return SimpleNamespace(name=name, fetch=fetch)
+
+
+def test_run_cycle_records_enumeration_into_stats(monkeypatch):
+    store = Store(":memory:")
+    monkeypatch.setattr(main, "ADAPTERS", {"fake": _counting_adapter("fake", [_flat("1")], 42)})
+    got, notify = _collector()
+    stats = {}
+    asyncio.run(main.run_cycle(
+        _config(), store, notify, sessions=_FakeSessions(), stats=stats,
+    ))
+    assert stats["fake"]["enumerated"] == 42
+
+
+def test_scheduler_drives_scrape_watch_detect_heal_notify(monkeypatch):
+    # Adapter that always enumerates ZERO cards -> a source going dark.
+    monkeypatch.setattr(main, "ADAPTERS", {"fake": _counting_adapter("fake", [], 0)})
+    monkeypatch.setattr(main.asyncio, "sleep", _noop_sleep())
+    # Diagnose offline as a session block (avoid real network in health.probe).
+    async def fake_diag(source):
+        return (main.monitor.SESSION, "stripped")
+    monkeypatch.setattr(main, "_diagnose_source", fake_diag)
+
+    sessions = _FakeSessions()
+    alerts = []
+
+    async def alert(text):
+        alerts.append(text)
+
+    store = Store(":memory:")
+    # Default streak threshold is 3 -> trips on the 3rd zero cycle.
+    asyncio.run(main.scheduler_loop(
+        _config(), store, lambda l: None,
+        interval=0, max_cycles=3, max_notify=None,
+        sessions=sessions, alert=alert,
+    ))
+    assert sessions.rotated == ["fake"]  # self-heal fired
+    assert len(alerts) == 1 and "Session" in alerts[0]  # user notified once
+
+
+def test_scheduler_no_watch_without_sessions_or_alert(monkeypatch):
+    # No sessions/alert -> monitoring disabled -> adapters called without stats.
+    seen_kwargs = []
+
+    async def fetch(config, is_new=None, *, limit=None):
+        seen_kwargs.append("ok")  # would TypeError if stats/client were passed
+        return []
+    monkeypatch.setattr(main, "ADAPTERS", {"fake": SimpleNamespace(name="fake", fetch=fetch)})
+    monkeypatch.setattr(main.asyncio, "sleep", _noop_sleep())
+    store = Store(":memory:")
+    asyncio.run(main.scheduler_loop(
+        _config(), store, lambda l: None,
+        interval=0, max_cycles=2, max_notify=None,
+    ))
+    assert seen_kwargs == ["ok", "ok"]
 
 
 def test_max_notify_caps_and_marks_rest_seen(monkeypatch):

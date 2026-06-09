@@ -133,6 +133,65 @@ def test_get_breaker_is_shared_by_name():
     assert a is b  # scheduler and /health see the same instance
 
 
+def test_immoscout_identity_is_an_app_not_a_browser():
+    """The IS24 identity must look like the app: its own UA + JSON Accept, and NOT
+    carry a browser's Client Hints (a Chrome sec-ch-ua over an app UA is a tell)."""
+    ident = hs.IDENTITIES["immoscout"]
+    assert ident.headers["User-Agent"].startswith("ImmoScout24_")
+    assert ident.headers["Accept"] == "application/json"
+    assert ident.headers["Accept-Language"].startswith("de-DE")
+    assert "sec-ch-ua" not in ident.headers
+    assert ident.impersonate == "chrome_android"  # mobile TLS, coherent with the app
+
+
+def test_proxy_for_reads_env(monkeypatch):
+    monkeypatch.delenv("IMMOSCOUT_PROXY", raising=False)
+    monkeypatch.delenv("FLATSNIPER_PROXY_IMMOSCOUT", raising=False)
+    assert hs.proxy_for("immoscout") is None  # unset -> direct connection (default)
+
+    monkeypatch.setenv("IMMOSCOUT_PROXY", "http://user:pass@host:8080")
+    assert hs.proxy_for("immoscout") == "http://user:pass@host:8080"
+
+    # Generic fallback, and blank/whitespace is treated as unset.
+    monkeypatch.delenv("IMMOSCOUT_PROXY", raising=False)
+    monkeypatch.setenv("FLATSNIPER_PROXY_IMMOSCOUT", "socks5://h:1")
+    assert hs.proxy_for("immoscout") == "socks5://h:1"
+    monkeypatch.setenv("FLATSNIPER_PROXY_IMMOSCOUT", "   ")
+    assert hs.proxy_for("immoscout") is None
+
+
+def test_identity_client_uses_app_headers():
+    """An identity client carries the app UA (curl_cffi: default_headers off so no
+    Chrome hints leak; httpx fallback: identity headers are the client defaults)."""
+    client = hs.new_client(identity=hs.IDENTITIES["immoscout"])
+    try:
+        if not hs._HAS_CURL:  # pragma: no cover - exercised only on the fallback path
+            assert client.headers["User-Agent"].startswith("ImmoScout24_")
+            assert "sec-ch-ua" not in client.headers
+        else:
+            assert type(client).__module__.startswith("curl_cffi")
+    finally:
+        asyncio.run(hs.aclose(client))
+
+
+def test_session_pool_gives_immoscout_its_identity(monkeypatch):
+    """The pool builds each source's client with its registered identity/proxy."""
+    captured = {}
+
+    def fake_new_client(*, rng=None, identity=None, proxy=None):
+        captured[len(captured)] = (identity, proxy)
+        return object()  # stand-in client; never used for I/O here
+
+    monkeypatch.setattr(hs, "new_client", fake_new_client)
+    monkeypatch.delenv("IMMOSCOUT_PROXY", raising=False)
+    monkeypatch.delenv("FLATSNIPER_PROXY_IMMOSCOUT", raising=False)
+    pool = hs.SessionPool()
+    pool.client_for("immoscout")
+    pool.client_for("wg_gesucht")
+    assert captured[0] == (hs.IDENTITIES["immoscout"], None)  # app identity, no proxy
+    assert captured[1] == (None, None)  # browser source -> default identity
+
+
 def test_session_pool_reuses_one_client_per_source():
     async def go():
         pool = hs.SessionPool()

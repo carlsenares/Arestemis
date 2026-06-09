@@ -252,6 +252,16 @@ async def _fetch_detail(
         return resp.json()
 
 
+def count_list_cards(html: str) -> int:
+    """Number of offer cards on the HTML list page, for the health watchdog.
+
+    The scraper enumerates via the JSON API, but the watchdog probes the public
+    HTML list page; `offer_list_item` is the per-offer container class, so its
+    count scales with real listings (≈26 on a healthy page) and drops to 0 on a
+    stripped/soft-blocked page — unlike a mere presence check."""
+    return html.count("offer_list_item")
+
+
 async def fetch(
     config: Config,
     is_new: NewPredicate | None = None,
@@ -259,8 +269,13 @@ async def fetch(
     cities: list[tuple[int, str]] | None = None,
     limit: int | None = None,
     client: httpx.AsyncClient | None = None,
+    stats: dict | None = None,
 ) -> list[Listing]:
-    """Fetch + normalize current WG-Gesucht offers for the configured search."""
+    """Fetch + normalize current WG-Gesucht offers for the configured search.
+
+    When `stats` is given, the raw enumerated-offer count is recorded as
+    `stats["enumerated"]` so the scheduler's scrape watchdog can detect when we
+    stop getting offers at all (independent of de-dup/filtering)."""
     own_client = client is None
     if own_client:
         # No injected session (e.g. the --once CLI / tests): build a one-shot
@@ -323,6 +338,8 @@ async def fetch(
                 except Exception:
                     log.exception("WG-Gesucht: failed to hydrate offer %s", offer_id)
 
+        if stats is not None:
+            stats["enumerated"] = len(seen_ids)
         log.info("WG-Gesucht: %d offers normalized (%d enumerated)", len(listings), len(seen_ids))
         return listings
     finally:
