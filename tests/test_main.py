@@ -127,7 +127,7 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
 
 
 def test_sources_registered():
-    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen", "immowelt"}
+    assert set(main.ADAPTERS) == {"wg_gesucht", "kleinanzeigen", "immowelt", "immoscout"}
 
 
 def test_scheduler_skips_scan_while_paused(monkeypatch):

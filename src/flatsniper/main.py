@@ -40,7 +40,7 @@ from .bot import (
 )
 from .config import Config, ConfigError, load_config
 from .llm.provider import classify_empty_2p_wg
-from .sources import http_session, immowelt, kleinanzeigen, wg_gesucht
+from .sources import http_session, immoscout, immowelt, kleinanzeigen, wg_gesucht
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ ADAPTERS: dict = {
     wg_gesucht.name: wg_gesucht,
     kleinanzeigen.name: kleinanzeigen,
     immowelt.name: immowelt,
+    immoscout.name: immoscout,
 }
 
 # Max NEW offers each adapter hydrates per cycle. Bounds request rate (politeness

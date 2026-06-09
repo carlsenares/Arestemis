@@ -26,9 +26,9 @@ wg_rule:
 
 sources:
   wg_gesucht: true
-  kleinanzeigen: true
+  kleinanzeigen: false             # PAUSED 2026-06-07: soft-blocks our session every cycle; re-enable to retry
   immowelt: true
-  immoscout: false               # later adapter (heavy anti-bot)
+  immoscout: true                # mobile-app API (München+Garching); website is captcha-walled
 
 poll_interval_seconds: 60
 

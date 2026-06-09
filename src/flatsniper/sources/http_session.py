@@ -32,6 +32,7 @@ docs/ARCHITECTURE.md for the escalation path.
 
 from __future__ import annotations
 
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -99,6 +100,52 @@ PROFILES: list[Profile] = [
 def pick_profile(rng: random.Random | None = None) -> Profile:
     """Choose one browser identity, kept stable for a whole client/session."""
     return (rng or random).choice(PROFILES)
+
+
+@dataclass(frozen=True)
+class Identity:
+    """A non-browser client identity for sources whose best-masked surface isn't
+    the website. The default (Identity=None) keeps the Chrome-impersonation browser
+    disguise used by the HTML/JSON-over-web adapters; a source listed in
+    `IDENTITIES` instead talks to a native-app API and must look like that app —
+    its own User-Agent + `Accept`, the matching TLS fingerprint, and crucially
+    *not* a browser's Client Hints (a Chrome `sec-ch-ua` over an app UA is the same
+    kind of mismatch tell we avoid for browsers). `impersonate` is the curl_cffi
+    target whose TLS pairs with the app's platform."""
+
+    impersonate: str  # curl_cffi impersonation target, e.g. "chrome_android"
+    headers: dict[str, str]  # identity headers sent on every request (UA, Accept, ...)
+
+
+# ImmoScout24 is reached via its mobile-app API (the website captcha-walls
+# datacenter IPs); the API expects the app's UA + JSON Accept over a mobile TLS
+# fingerprint. See sources/immoscout.py.
+IMMOSCOUT_APP_UA = "ImmoScout24_1410_30_._"
+IDENTITIES: dict[str, Identity] = {
+    "immoscout": Identity(
+        impersonate="chrome_android",
+        headers={
+            "User-Agent": IMMOSCOUT_APP_UA,
+            "Accept": "application/json",
+            "Accept-Language": ACCEPT_LANGUAGE,
+        },
+    ),
+}
+
+
+def proxy_for(source: str) -> str | None:
+    """Optional per-source proxy URL from the environment, or None.
+
+    The dominant ban risk for the hardest portals is the datacenter IP itself, so
+    a source can be routed through a residential proxy without a code change. Read
+    `<SOURCE>_PROXY` (e.g. `IMMOSCOUT_PROXY`) first, then a generic
+    `FLATSNIPER_PROXY_<SOURCE>`. Unset -> None (direct connection, the default).
+    The env is populated from `.env` by `config.load_config` at startup.
+    """
+    up = source.upper()
+    value = os.environ.get(f"{up}_PROXY") or os.environ.get(f"FLATSNIPER_PROXY_{up}")
+    value = (value or "").strip()
+    return value or None
 
 
 def jitter(base: float, frac: float = 0.4, rng: random.Random | None = None) -> float:
@@ -173,8 +220,10 @@ def new_client(
     *,
     timeout: float = 20.0,
     rng: random.Random | None = None,
+    identity: Identity | None = None,
+    proxy: str | None = None,
 ):
-    """Build an HTTP client with the strongest available browser disguise.
+    """Build an HTTP client with the strongest available browser/app disguise.
 
     Primary: a `curl_cffi` session impersonating Chrome — this is the deepest
     masking layer, replicating Chrome's TLS (JA3/JA4) and HTTP/2 fingerprints,
@@ -183,25 +232,49 @@ def new_client(
     they match the fingerprint); we only set Accept-Language (German) here and
     pass Referer/Accept per request via the header builders.
 
+    When `identity` is given (a source whose surface is a native-app API rather
+    than the website), impersonate that app instead: its TLS fingerprint plus its
+    own headers (UA/Accept), and *not* a browser's Client Hints
+    (`default_headers=False`), so UA and TLS stay coherent app-side.
+
+    `proxy` optionally routes the client through a proxy (the per-source escalation
+    lever for the dominant ban risk, the datacenter IP). None = direct.
+
     Fallback (curl_cffi unavailable): an httpx client wearing one coherent
-    desktop-Chrome `Profile` over HTTP/2. Weaker (non-Chrome TLS) but functional.
+    desktop-Chrome `Profile` (or the identity headers) over HTTP/2. Weaker
+    (non-Chrome TLS) but functional.
 
     Either way cookies persist for the client's lifetime, so reusing one client
     across cycles looks like a returning session (see `SessionPool`).
     """
     if _HAS_CURL:
-        return _curl.AsyncSession(
-            impersonate=IMPERSONATE,
-            headers={"Accept-Language": ACCEPT_LANGUAGE},
-            timeout=timeout,
-            default_headers=True,
-        )
-    profile = profile or pick_profile(rng)
+        if identity is not None:
+            kwargs = dict(
+                impersonate=identity.impersonate,
+                headers=dict(identity.headers),
+                timeout=timeout,
+                default_headers=False,
+            )
+        else:
+            kwargs = dict(
+                impersonate=IMPERSONATE,
+                headers={"Accept-Language": ACCEPT_LANGUAGE},
+                timeout=timeout,
+                default_headers=True,
+            )
+        if proxy:
+            kwargs["proxies"] = {"http": proxy, "https": proxy}
+        return _curl.AsyncSession(**kwargs)
+    headers = dict(identity.headers) if identity is not None else client_headers(
+        profile or pick_profile(rng)
+    )
     kwargs = dict(
-        headers=client_headers(profile),
+        headers=headers,
         timeout=httpx.Timeout(timeout),
         follow_redirects=True,
     )
+    if proxy:
+        kwargs["proxy"] = proxy
     try:
         return httpx.AsyncClient(http2=True, **kwargs)
     except ImportError:  # h2 not installed — degrade gracefully
@@ -289,7 +362,11 @@ class SessionPool:
     def client_for(self, source: str):
         client = self._clients.get(source)
         if client is None:
-            client = new_client(rng=self._rng)
+            client = new_client(
+                rng=self._rng,
+                identity=IDENTITIES.get(source),
+                proxy=proxy_for(source),
+            )
             self._clients[source] = client
         return client
 

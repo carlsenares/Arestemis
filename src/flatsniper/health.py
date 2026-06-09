@@ -31,7 +31,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .sources import http_session, immowelt, kleinanzeigen, wg_gesucht
+from .sources import http_session, immoscout, immowelt, kleinanzeigen, wg_gesucht
 
 # Health states. SESSION_BLOCKED is never produced by `classify` (one probe can't
 # see it); the scrape watchdog / session-aware report derive it.
@@ -45,9 +45,14 @@ ERROR = "error"
 class Canary:
     source: str  # source key (matches adapter.name / SessionPool / breaker)
     name: str  # display name
-    url: str  # public list page to probe
+    url: str  # public list page (or app-API endpoint) to probe
     count_cards: Callable[[str], int]  # real-card counter for this portal
     referer: str = "https://www.google.com/"
+    method: str = "GET"  # "POST" for the ImmoScout mobile API (reads query, empty body)
+    # Non-browser client identity for the standalone probe (e.g. the IS24 app);
+    # None means the default browser disguise. In scheduler mode the live
+    # SessionPool already supplies the right per-source identity.
+    identity: http_session.Identity | None = None
 
 
 CANARIES: list[Canary] = [
@@ -69,6 +74,14 @@ CANARIES: list[Canary] = [
         "Immowelt",
         "https://www.immowelt.de/liste/muenchen/wohnungen/mieten",
         immowelt.count_list_cards,
+    ),
+    Canary(
+        "immoscout",
+        "ImmoScout24",
+        immoscout._list_url("/de/bayern/muenchen"),
+        immoscout.count_cards,
+        method="POST",
+        identity=http_session.IDENTITIES.get("immoscout"),
     ),
 ]
 
@@ -108,9 +121,14 @@ def classify(name: str, source: str, status: int | None, body: str, count: int) 
 
 async def _check_one(client, canary: Canary) -> PortalHealth:
     try:
-        resp = await client.get(
-            canary.url, headers=http_session.navigation_headers(referer=canary.referer)
-        )
+        if canary.method == "POST":
+            # App-API canary (IS24 mobile): empty body, the client already carries
+            # the app's identity headers — no browser navigation headers.
+            resp = await client.post(canary.url, data="")
+        else:
+            resp = await client.get(
+                canary.url, headers=http_session.navigation_headers(referer=canary.referer)
+            )
         status = getattr(resp, "status_code", None)
         body = resp.text
         try:
@@ -141,10 +159,19 @@ def _downgrade_for_breaker(result: PortalHealth) -> PortalHealth:
 
 
 async def probe(source: str, client=None) -> PortalHealth:
-    """Probe a single portal (fresh client unless one is supplied) and classify."""
+    """Probe a single portal (fresh client unless one is supplied) and classify.
+
+    A fresh standalone client honors the canary's identity + per-source proxy, so a
+    source on the app API (IS24) is probed as the app, not a browser."""
     canary = _BY_SOURCE[source]
     own = client is None
-    c = http_session.new_client() if own else client
+    c = (
+        http_session.new_client(
+            identity=canary.identity, proxy=http_session.proxy_for(source)
+        )
+        if own
+        else client
+    )
     try:
         return _downgrade_for_breaker(await _check_one(c, canary))
     finally:
@@ -157,11 +184,25 @@ async def check_all(get_client=None) -> list[PortalHealth]:
     scheduler passes its SessionPool so probes share the live identity); when
     omitted, one fresh impersonating client is used for all probes."""
     own = get_client is None
+    # Standalone: reuse one browser client across the browser canaries, but build a
+    # dedicated identity client per app-API canary (e.g. IS24 mobile).
     shared = http_session.new_client() if own else None
     out: list[PortalHealth] = []
     try:
         for canary in CANARIES:
-            client = shared if own else get_client(canary.source)
+            if not own:
+                client = get_client(canary.source)
+            elif canary.identity is not None:
+                client = http_session.new_client(
+                    identity=canary.identity, proxy=http_session.proxy_for(canary.source)
+                )
+                try:
+                    out.append(_downgrade_for_breaker(await _check_one(client, canary)))
+                finally:
+                    await http_session.aclose(client)
+                continue
+            else:
+                client = shared
             out.append(_downgrade_for_breaker(await _check_one(client, canary)))
     finally:
         if own and shared is not None:

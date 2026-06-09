@@ -115,6 +115,51 @@ def test_check_all_soft_block_is_not_ok(monkeypatch):
     assert all(not r.ok and r.state == health.PORTAL_BLOCKED for r in results)
 
 
+class _PostClient:
+    """Mock whose POST returns a fixed response (the IS24 mobile canary is POST)."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self.posted = []
+
+    async def post(self, url, data=None, headers=None):
+        self.posted.append((url, data))
+        return self._resp
+
+
+def test_immoscout_canary_is_a_post_app_probe():
+    """The registered IS24 canary must POST (its list route reads the query, empty
+    body) and carry the app identity so the standalone probe looks like the app."""
+    from flatsniper.sources import http_session
+
+    canary = health._BY_SOURCE["immoscout"]
+    assert canary.method == "POST"
+    assert canary.identity is http_session.IDENTITIES["immoscout"]
+    assert canary.url.startswith("https://api.mobile.immobilienscout24.de/search/list?")
+
+
+def test_check_one_posts_for_immoscout_and_keys_on_items(monkeypatch):
+    from flatsniper.sources import http_session
+
+    monkeypatch.setattr(http_session, "_BREAKERS", {})  # no stale breaker downgrade
+    canary = health._BY_SOURCE["immoscout"]
+
+    # 200 with real result items -> OK, and we POSTed an empty body.
+    ok_client = _PostClient(_Resp(200, '{"resultListItems":[{"type":"EXPOSE_RESULT","item":{"id":"1"}}]}'))
+    res = asyncio.run(health._check_one(ok_client, canary))
+    assert res.ok and ok_client.posted and ok_client.posted[0][1] == ""
+
+    # 200 with the API's error/catch-all body -> zero cards -> blocked.
+    err_body = _PostClient(_Resp(200, '{"error":"what???"}'))
+    res = asyncio.run(health._check_one(err_body, canary))
+    assert not res.ok and res.state == health.PORTAL_BLOCKED and "no listings" in res.detail
+
+    # 403 (HTML challenge) -> blocked.
+    blocked = _PostClient(_Resp(403, "<html>forbidden</html>"))
+    res = asyncio.run(health._check_one(blocked, canary))
+    assert res.state == health.PORTAL_BLOCKED and "403" in res.detail
+
+
 def test_session_aware_report_flags_session_block(monkeypatch):
     from flatsniper.sources import http_session
 
