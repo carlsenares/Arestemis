@@ -1,34 +1,45 @@
 # Ready-to-use config for Patrik. On the server:  cp config.ready.yaml config.yaml
 # (config.yaml is git-ignored; this file is committed for easy copy-paste. No secrets here.)
+# Garching-only · single-person flats · no size/price filter · LLM send-gate.
 
 search:
-  # Rent treated as WARM (total incl. utilities). A single flat qualifies if it meets
-  # ANY tier:  sqm >= tier.min_sqm  AND  rent_warm <= tier.max_rent_warm
-  min_sqm: 28                # hard floor; smaller is rejected
+  # No size/price filter: a zero floor + unbounded tier means every single flat
+  # qualifies regardless of m² or rent (incl. listings whose size/rent we can't parse).
+  min_sqm: 0
   rent_tiers:
-    - { min_sqm: 28, max_rent_warm: 1000 }   # 28-39 m²  -> up to 1000 EUR
-    - { min_sqm: 40, max_rent_warm: 1200 }   # 40 m²+    -> up to 1200 EUR
+    - { min_sqm: 0, max_rent_warm: 1000000 }
   min_rooms: 1
   earliest_move_in: "2026-08-01"
-  # Garching <-> Munich corridor (U6 axis). Broad on purpose; refine later.
+  # Garching only. This both scopes the ImmoScout region query AND the area filter.
   areas:
     - Garching bei München
     - Garching-Hochbrück
-    - Freimann
-    - Studentenstadt
-    - Schwabing
-    - Maxvorstadt
-    - München
   postal_codes: []
+  # Deterministic keyword backstop to the LLM send-gate (case-insensitive, over
+  # title + description). The LLM also blocks the fuzzy "in the direction of" cases.
+  blocklist:
+    - Tauschwohnung
+    - Wohnungstausch
+    - Tausch
+    - tausche
+    - Untermiete
+    - Untermieter
+    - Untervermietung
+    - Zwischenmiete
+    - Zwischenmieter
+    - Zwischenmieten
+    - befristet
+    - auf Zeit
+    - Wohnen auf Zeit
 
 wg_rule:
-  allow_empty_2person_wg: true   # single flats always OK; a WG only if it's an empty 2-person WG
+  allow_empty_2person_wg: false   # single-person flats only — no WGs
 
 sources:
   wg_gesucht: true
   kleinanzeigen: false             # PAUSED 2026-06-07: soft-blocks our session every cycle; re-enable to retry
   immowelt: true
-  immoscout: true                # mobile-app API (München+Garching); website is captcha-walled
+  immoscout: true                # mobile-app API; with Garching-only areas it queries only Garching
 
 poll_interval_seconds: 60
 

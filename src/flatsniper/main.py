@@ -39,7 +39,7 @@ from .bot import (
     send_listing,
 )
 from .config import Config, ConfigError, load_config
-from .llm.provider import classify_empty_2p_wg
+from .llm.provider import classify_empty_2p_wg, should_notify
 from .sources import http_session, immoscout, immowelt, kleinanzeigen, wg_gesucht
 from .store import Store
 
@@ -107,15 +107,21 @@ async def _gather_listings(config: Config, is_new, *, limit, sessions=None, stat
 
 
 async def _evaluate(listing, config: Config) -> bool:
-    """Full match decision for a single listing (prefilter -> WG classify -> rent)."""
+    """Full match decision for a single listing.
+
+    prefilter (area/move-in/blocklist/size-price) -> WG classify+rent (if a WG is
+    even allowed) -> free-LLM send-gate (blocks swaps/sublets/temporary + anything
+    that isn't a standalone single-person flat)."""
     if not filt.passes_prefilter(listing, config):
         return False
     if listing.is_wg:
         is_empty = await asyncio.to_thread(classify_empty_2p_wg, listing, config.secrets)
-        if not is_empty:
+        if not is_empty or not filt.passes_postclassify(listing, config.search):
             return False
-        return filt.passes_postclassify(listing, config.search)
-    return True
+    send, reason = await asyncio.to_thread(should_notify, listing, config.secrets)
+    if not send:
+        log.info("LLM gate skipped %s:%s — %s", listing.source, listing.external_id, reason)
+    return send
 
 
 async def run_cycle(

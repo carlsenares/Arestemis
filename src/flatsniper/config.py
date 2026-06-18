@@ -42,6 +42,9 @@ class SearchConfig:
     earliest_move_in: date
     areas: list[str]
     postal_codes: list[str]
+    # keyword backstop (swaps/sublets/temporary) — deterministic reject. Defaults
+    # empty so direct constructions (tests) stay valid; load_config always sets it.
+    blocklist: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,7 @@ class Config:
                 "earliest_move_in": s.earliest_move_in.isoformat(),
                 "areas": s.areas,
                 "postal_codes": s.postal_codes,
+                "blocklist": s.blocklist,
             },
             "wg_rule": {"allow_empty_2person_wg": self.allow_empty_2person_wg},
             "sources": self.sources,
@@ -150,6 +154,17 @@ def _require(data: dict, key: str, where: str):
     return data[key]
 
 
+# Default keyword blocklist (case-insensitive substring match over title +
+# description). Deterministic backstop to the LLM send-gate so explicit swaps and
+# sublets are dropped even when the LLM is unavailable. Override via search.blocklist.
+_DEFAULT_BLOCKLIST = [
+    "Tauschwohnung", "Wohnungstausch", "Tausch", "tausche",
+    "Untermiete", "Untermieter", "Untervermietung",
+    "Zwischenmiete", "Zwischenmieter", "Zwischenmieten",
+    "befristet", "auf Zeit", "Wohnen auf Zeit",
+]
+
+
 def _parse_search(raw: dict) -> SearchConfig:
     tiers_raw = _require(raw, "rent_tiers", "search")
     if not tiers_raw:
@@ -167,6 +182,7 @@ def _parse_search(raw: dict) -> SearchConfig:
         earliest_move_in=move_in,
         areas=list(_require(raw, "areas", "search")),
         postal_codes=list(raw.get("postal_codes") or []),
+        blocklist=[str(x).strip() for x in (raw.get("blocklist") or _DEFAULT_BLOCKLIST) if str(x).strip()],
     )
 
 

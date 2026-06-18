@@ -119,6 +119,52 @@ def classify_empty_2p_wg(listing: Listing, secrets: Secrets, *, client: Groq | N
         return False
 
 
+# --- Send-gate ------------------------------------------------------------
+
+_SEND_GATE_SYSTEM = (
+    "Du entscheidest, ob eine Wohnungsanzeige an den Nutzer weitergeleitet wird. "
+    "Der Nutzer sucht AUSSCHLIESSLICH eine eigene, eigenständige Wohnung für eine "
+    "Einzelperson zur regulären, unbefristeten Anmietung. "
+    "Antworte mit send=false, wenn AUCH NUR EINES zutrifft: "
+    "(a) Tauschwohnung oder Wohnungstausch (jemand möchte seine Wohnung tauschen); "
+    "(b) Untermiete oder Untervermietung; "
+    "(c) Zwischenmiete, Wohnen auf Zeit, befristet oder nur für einen begrenzten "
+    "Zeitraum gedacht; "
+    "(d) es ist keine eigenständige Wohnung für eine Einzelperson (z. B. WG-Zimmer, "
+    "geteilte Wohnung, möbliertes Einzelzimmer, Co-Living, mehrere Personen); "
+    "(e) gewerbliche Kurzzeit-/Ferienvermietung. "
+    "Im Zweifel bei einem dieser Ausschlussgründe antworte mit send=false. "
+    'Antworte ausschließlich mit JSON: {"send": true|false, "reason": "<kurz>"}.'
+)
+
+
+def should_notify(listing: Listing, secrets: Secrets, *, client: Groq | None = None) -> tuple[bool, str]:
+    """Free-LLM send-gate over the whole listing text. Returns (send, reason).
+
+    Suppresses swaps (Tauschwohnung), sublets (Untermiete/Zwischenmiete),
+    temporary/befristet rentals, and anything that isn't a standalone single-person
+    flat — catching the fuzzy "in the direction of" cases the keyword blocklist
+    can't. **Fails OPEN**: on an LLM error we send, because the deterministic
+    blocklist (filter.is_blocked) already drops explicit bad categories and missing
+    a real flat is worse than a rare borderline send."""
+    client = client or _client(secrets)
+    try:
+        resp = client.chat.completions.create(
+            model=secrets.llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _SEND_GATE_SYSTEM},
+                {"role": "user", "content": _listing_blurb(listing)},
+            ],
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return bool(data.get("send", True)), str(data.get("reason", ""))
+    except Exception:
+        log.exception("should_notify failed for %s; failing open (send)", listing.external_id)
+        return True, "llm-error-fail-open"
+
+
 # --- Application drafting -------------------------------------------------
 #
 # Deterministic on purpose: the user supplies the exact German copy in

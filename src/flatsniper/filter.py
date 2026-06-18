@@ -27,6 +27,11 @@ from .models import Listing
 def rent_ok(listing: Listing, search: SearchConfig) -> bool:
     """Size-tiered rent rule. Qualifies if any tier matches; under min_sqm or
     with unknown size/rent it fails (can't be verified)."""
+    # "No size/price filter" mode: a zero floor with effectively unbounded rent
+    # means every flat qualifies regardless of size/price — including ones whose
+    # size or rent we couldn't parse. Short-circuit so missing data doesn't reject.
+    if search.min_sqm <= 0 and all(t.max_rent_warm >= 1_000_000 for t in search.rent_tiers):
+        return True
     if listing.sqm is None or listing.rent_warm is None:
         return False
     if listing.sqm < search.min_sqm:
@@ -35,6 +40,17 @@ def rent_ok(listing: Listing, search: SearchConfig) -> bool:
         listing.sqm >= tier.min_sqm and listing.rent_warm <= tier.max_rent_warm
         for tier in search.rent_tiers
     )
+
+
+def is_blocked(listing: Listing, search: SearchConfig) -> bool:
+    """True if the listing matches a blocklist keyword (swaps/sublets/temporary).
+    Deterministic backstop to the LLM send-gate (filter.passes_prefilter) so
+    explicit Tausch-/Unter-/Zwischenmiete listings are rejected even when the LLM
+    is unavailable. Matches case-insensitively over title + description."""
+    if not search.blocklist:
+        return False
+    text = f"{listing.title or ''} {listing.description or ''}".lower()
+    return any(kw.lower() in text for kw in search.blocklist)
 
 
 def _location_text(listing: Listing) -> str:
@@ -98,6 +114,8 @@ def passes_prefilter(listing: Listing, config: Config) -> bool:
     (2-person + allowed) + area/move-in; emptiness + rent are decided later.
     """
     search = config.search
+    if is_blocked(listing, search):
+        return False
     if not area_ok(listing, search) or not move_in_ok(listing, search):
         return False
     if listing.is_wg:

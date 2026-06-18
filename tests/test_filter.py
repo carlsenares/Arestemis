@@ -117,3 +117,31 @@ def test_postclassify_applies_rent():
     s = _search()
     assert F.passes_postclassify(_wg(sqm=55, rent=950), s) is True
     assert F.passes_postclassify(_wg(sqm=55, rent=1300), s) is False
+
+
+# --- no-size/price (unbounded) mode ---------------------------------------
+
+def test_rent_ok_unbounded_passes_everything():
+    """min_sqm 0 + unbounded tier => every flat qualifies, incl. unknown data."""
+    s = _search(min_sqm=0, rent_tiers=[RentTier(0, 1_000_000)])
+    assert F.rent_ok(_flat(sqm=12, rent=2500), s) is True       # tiny + pricey: still OK
+    assert F.rent_ok(_flat(sqm=None, rent=None), s) is True     # unparseable: still OK
+
+
+# --- blocklist (swaps/sublets/temporary) ----------------------------------
+
+def test_is_blocked_keywords():
+    s = _search(blocklist=["Tauschwohnung", "Untermiete", "Zwischenmiete"])
+    assert F.is_blocked(_flat(title="Schöne Tauschwohnung in Garching"), s) is True
+    assert F.is_blocked(_flat(title="1-Zi", description="nur zur Zwischenmiete frei"), s) is True
+    assert F.is_blocked(_flat(title="Helle 1-Zimmer-Wohnung"), s) is False
+    assert F.is_blocked(_flat(title="x"), _search(blocklist=[])) is False  # no list => never blocks
+
+
+def test_prefilter_rejects_blocked():
+    cfg = _config(allow_wg=False, min_sqm=0, rent_tiers=[RentTier(0, 1_000_000)],
+                  blocklist=["Untermiete"], areas=["Garching bei München"])
+    blocked = _flat(title="Wohnung zur Untermiete", raw={"city_name": "Garching"})
+    clean = _flat(title="1-Zimmer-Wohnung", raw={"city_name": "Garching"})
+    assert F.passes_prefilter(blocked, cfg) is False
+    assert F.passes_prefilter(clean, cfg) is True   # unbounded + Garching + not blocked
