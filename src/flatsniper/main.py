@@ -109,16 +109,18 @@ async def _gather_listings(config: Config, is_new, *, limit, sessions=None, stat
 async def _evaluate(listing, config: Config) -> bool:
     """Full match decision for a single listing.
 
-    prefilter (area/move-in/blocklist/size-price) -> WG classify+rent (if a WG is
-    even allowed) -> free-LLM send-gate (blocks swaps/sublets/temporary + anything
-    that isn't a standalone single-person flat)."""
+    prefilter (area/move-in/blocklist/size-price) -> WG classify+rent (only in the
+    strict empty-2-person mode) -> free-LLM send-gate (blocks swaps/sublets/
+    temporary, and anything shared at all when WGs aren't wanted)."""
     if not filt.passes_prefilter(listing, config):
         return False
-    if listing.is_wg:
+    if listing.is_wg and config.wg_needs_classification:
         is_empty = await asyncio.to_thread(classify_empty_2p_wg, listing, config.secrets)
         if not is_empty or not filt.passes_postclassify(listing, config.search):
             return False
-    send, reason = await asyncio.to_thread(should_notify, listing, config.secrets)
+    send, reason = await asyncio.to_thread(
+        should_notify, listing, config.secrets, allow_wg=config.wg_allowed
+    )
     if not send:
         log.info("LLM gate skipped %s:%s — %s", listing.source, listing.external_id, reason)
     return send

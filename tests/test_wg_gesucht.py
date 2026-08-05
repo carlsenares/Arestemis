@@ -80,11 +80,11 @@ def test_warm_rent_falls_back_to_components():
 
 def test_enabled_categories_includes_wg_when_allowed():
     class C:
-        allow_empty_2person_wg = True
+        wg_allowed = True
     assert wg._enabled_categories(C()) == [0, 1, 2]
 
     class D:
-        allow_empty_2person_wg = False
+        wg_allowed = False
     assert wg._enabled_categories(D()) == [1, 2]
 
 

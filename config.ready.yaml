@@ -1,19 +1,112 @@
 # Ready-to-use config for Patrik. On the server:  cp config.ready.yaml config.yaml
 # (config.yaml is git-ignored; this file is committed for easy copy-paste. No secrets here.)
-# Garching-only · single-person flats · no size/price filter · LLM send-gate.
+# Munich inner city · WG rooms OR single flats · warm rent up to 900 € ·
+# move-in from 01.10.2026.
+#
+# How the area filter works: `areas` stays broad ("München") because it is what
+# scopes the portal queries — WG-Gesucht city 90, ImmoScout /de/bayern/muenchen.
+# The outskirts are carved back out by `exclude_areas` below, which is matched
+# whole-word against city/district/PLZ/title and the listing link (WG-Gesucht
+# reports every offer as plain "München" and only slugs the district into the
+# URL). Garching is no longer searched at
+# all (it is not in `areas`) and is excluded as a belt-and-braces measure,
+# because "Garching b. München" contains "München".
 
 search:
-  # No size/price filter: a zero floor + unbounded tier means every single flat
-  # qualifies regardless of m² or rent (incl. listings whose size/rent we can't parse).
+  # No minimum size — judged on price alone.
   min_sqm: 0
   rent_tiers:
-    - { min_sqm: 0, max_rent_warm: 1000000 }
+    - { min_sqm: 0, max_rent_warm: 900 }
   min_rooms: 1
-  earliest_move_in: "2026-08-01"
-  # Garching only. This both scopes the ImmoScout region query AND the area filter.
+  # Move-in WINDOW, not an open-ended floor: 01.10 is the target start date,
+  # so a room that only frees up in December is no use. Widen latest_move_in
+  # to see later starts.
+  earliest_move_in: "2026-10-01"
+  latest_move_in: "2026-10-15"
   areas:
-    - Garching bei München
-    - Garching-Hochbrück
+    - München
+  # Outskirts of the city + surrounding towns. Everything not listed here stays
+  # in — i.e. the whole inner and middle city, out to roughly the Mittlerer Ring
+  # and the well-connected districts just beyond it.
+  exclude_areas:
+    # --- not Munich at all -------------------------------------------------
+    - Garching
+    - Unterschleißheim
+    - Oberschleißheim
+    - Ismaning
+    - Unterföhring
+    - Aschheim
+    - Feldkirchen
+    - Kirchheim
+    - Haar
+    - Vaterstetten
+    - Baldham
+    - Poing
+    - Markt Schwaben
+    - Zorneding
+    - Putzbrunn
+    - Grasbrunn
+    - Hohenbrunn
+    - Ottobrunn
+    - Neubiberg
+    - Unterhaching
+    - Oberhaching
+    - Taufkirchen
+    - Sauerlach
+    - Brunnthal
+    - Grünwald
+    - Pullach
+    - Gräfelfing
+    - Planegg
+    - Krailling
+    - Gauting
+    - Starnberg
+    - Germering
+    - Neugermering
+    - Puchheim
+    - Gröbenzell
+    - Olching
+    - Karlsfeld
+    - Dachau
+    - Fürstenfeldbruck
+    - Eching
+    - Hallbergmoos
+    - Freising
+    - Erding
+    # --- Munich, but the outer edge ----------------------------------------
+    - Aubing
+    - Neuaubing
+    - Lochhausen
+    - Langwied
+    - Freiham
+    - Allach
+    - Untermenzing
+    - Obermenzing
+    - Pasing
+    - Feldmoching
+    - Hasenbergl
+    - Lerchenau
+    - Ludwigsfeld
+    - Harthof
+    - Am Hart
+    - Trudering
+    - Waldtrudering
+    - Neutrudering
+    - Riem
+    - Messestadt
+    - Perlach
+    - Neuperlach
+    - Waldperlach
+    - Hadern
+    - Großhadern
+    - Kleinhadern
+    - Blumenau
+    - Forstenried
+    - Fürstenried
+    - Solln
+    - Daglfing
+    - Johanneskirchen
+    - Englschalking
   postal_codes: []
   # Deterministic keyword backstop to the LLM send-gate (case-insensitive, over
   # title + description). The LLM also blocks the fuzzy "in the direction of" cases.
@@ -33,13 +126,15 @@ search:
     - Wohnen auf Zeit
 
 wg_rule:
-  allow_empty_2person_wg: false   # single-person flats only — no WGs
+  # any | empty_2person | none. "any": an ordinary WG room is a valid hit,
+  # alongside single-person flats.
+  mode: any
 
 sources:
   wg_gesucht: true
   kleinanzeigen: false             # PAUSED 2026-06-07: soft-blocks our session every cycle; re-enable to retry
   immowelt: true
-  immoscout: true                # mobile-app API; with Garching-only areas it queries only Garching
+  immoscout: true                # mobile-app API; scoped to the München region
 
 poll_interval_seconds: 60
 

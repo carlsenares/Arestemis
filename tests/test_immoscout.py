@@ -11,7 +11,7 @@ import json
 from datetime import date
 
 from flatsniper import filter as filt
-from flatsniper.config import Config, RentTier, SearchConfig, Secrets
+from flatsniper.config import WG_NONE, Config, RentTier, SearchConfig, Secrets
 from flatsniper.sources import immoscout as is24
 
 
@@ -47,7 +47,7 @@ def _config(**kw):
         areas=kw.get("areas", ["München", "Garching bei München"]),
         postal_codes=[],
     )
-    return Config(search=search, allow_empty_2person_wg=False, sources={},
+    return Config(search=search, wg_mode=WG_NONE, sources={},
                   poll_interval_seconds=60, about_me="", secrets=Secrets("t", "c", "k", "m"))
 
 

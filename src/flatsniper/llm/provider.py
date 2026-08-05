@@ -121,40 +121,72 @@ def classify_empty_2p_wg(listing: Listing, secrets: Secrets, *, client: Groq | N
 
 # --- Send-gate ------------------------------------------------------------
 
-_SEND_GATE_SYSTEM = (
+_SEND_GATE_INTRO = (
     "Du entscheidest, ob eine Wohnungsanzeige an den Nutzer weitergeleitet wird. "
-    "Der Nutzer sucht AUSSCHLIESSLICH eine eigene, eigenständige Wohnung für eine "
-    "Einzelperson zur regulären, unbefristeten Anmietung. "
+)
+# Exclusions (a)-(c) hold whatever the user is looking for; each variant appends
+# its own (d)/(e).
+_SEND_GATE_COMMON = (
     "Antworte mit send=false, wenn AUCH NUR EINES zutrifft: "
     "(a) Tauschwohnung oder Wohnungstausch (jemand möchte seine Wohnung tauschen); "
     "(b) Untermiete oder Untervermietung; "
     "(c) Zwischenmiete, Wohnen auf Zeit, befristet oder nur für einen begrenzten "
     "Zeitraum gedacht; "
-    "(d) es ist keine eigenständige Wohnung für eine Einzelperson (z. B. WG-Zimmer, "
-    "geteilte Wohnung, möbliertes Einzelzimmer, Co-Living, mehrere Personen); "
-    "(e) gewerbliche Kurzzeit-/Ferienvermietung. "
+)
+_SEND_GATE_TAIL = (
     "Im Zweifel bei einem dieser Ausschlussgründe antworte mit send=false. "
     'Antworte ausschließlich mit JSON: {"send": true|false, "reason": "<kurz>"}.'
 )
 
+# WGs unwanted: nothing shared gets through.
+_SEND_GATE_SINGLE_ONLY = (
+    _SEND_GATE_INTRO
+    + "Der Nutzer sucht AUSSCHLIESSLICH eine eigene, eigenständige Wohnung für eine "
+    "Einzelperson zur regulären, unbefristeten Anmietung. "
+    + _SEND_GATE_COMMON
+    + "(d) es ist keine eigenständige Wohnung für eine Einzelperson (z. B. WG-Zimmer, "
+    "geteilte Wohnung, möbliertes Einzelzimmer, Co-Living, mehrere Personen); "
+    "(e) gewerbliche Kurzzeit-/Ferienvermietung. "
+    + _SEND_GATE_TAIL
+)
 
-def should_notify(listing: Listing, secrets: Secrets, *, client: Groq | None = None) -> tuple[bool, str]:
+# WGs wanted: a room in a shared flat is a valid hit, so only the temporary and
+# commercial categories are excluded. A normal furnished WG room is fine — the
+# exclusion targets operators renting rooms as a business, not private WGs.
+_SEND_GATE_WG_OK = (
+    _SEND_GATE_INTRO
+    + "Der Nutzer sucht eine reguläre, unbefristete Anmietung zum dauerhaften Wohnen — "
+    "entweder eine eigene Wohnung ODER ein Zimmer in einer WG. Beides ist erwünscht. "
+    + _SEND_GATE_COMMON
+    + "(d) gewerbliche Kurzzeit-/Ferienvermietung, Aparthotel oder Serviced Apartment; "
+    "(e) gewerbliches Co-Living bzw. Anbieter, die viele Zimmer als Geschäft "
+    "vermieten (z. B. 'our rooms', 'each room', 'Zimmer X von Y'). "
+    + _SEND_GATE_TAIL
+)
+
+
+def should_notify(
+    listing: Listing, secrets: Secrets, *, allow_wg: bool = False, client: Groq | None = None
+) -> tuple[bool, str]:
     """Free-LLM send-gate over the whole listing text. Returns (send, reason).
 
-    Suppresses swaps (Tauschwohnung), sublets (Untermiete/Zwischenmiete),
-    temporary/befristet rentals, and anything that isn't a standalone single-person
-    flat — catching the fuzzy "in the direction of" cases the keyword blocklist
-    can't. **Fails OPEN**: on an LLM error we send, because the deterministic
-    blocklist (filter.is_blocked) already drops explicit bad categories and missing
-    a real flat is worse than a rare borderline send."""
+    Suppresses swaps (Tauschwohnung), sublets (Untermiete/Zwischenmiete) and
+    temporary/befristet rentals — catching the fuzzy "in the direction of" cases
+    the keyword blocklist can't. With `allow_wg` false it additionally drops
+    anything shared; with it true, WG rooms are wanted and only commercial
+    short-stay/co-living operators are filtered out. **Fails OPEN**: on an LLM
+    error we send, because the deterministic blocklist (filter.is_blocked) already
+    drops explicit bad categories and missing a real flat is worse than a rare
+    borderline send."""
     client = client or _client(secrets)
+    system = _SEND_GATE_WG_OK if allow_wg else _SEND_GATE_SINGLE_ONLY
     try:
         resp = client.chat.completions.create(
             model=secrets.llm_model,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": _SEND_GATE_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": _listing_blurb(listing)},
             ],
         )

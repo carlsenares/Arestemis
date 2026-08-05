@@ -42,6 +42,34 @@ def test_classify_bad_json_defaults_false():
     assert provider.classify_empty_2p_wg(_wg("x"), _secrets(), client=client) is False
 
 
+def _system_prompt(client: MagicMock) -> str:
+    return client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+
+
+def test_send_gate_prompt_follows_allow_wg():
+    """The gate that rejects every shared flat must not run when WG rooms are
+    exactly what the user is looking for."""
+    client = _fake_client('{"send": true, "reason": "ok"}')
+
+    provider.should_notify(_wg("Zimmer in 3er WG"), _secrets(), allow_wg=False, client=client)
+    single_only = _system_prompt(client)
+    assert "WG-Zimmer" in single_only  # listed as an exclusion
+
+    provider.should_notify(_wg("Zimmer in 3er WG"), _secrets(), allow_wg=True, client=client)
+    wg_ok = _system_prompt(client)
+    assert "Zimmer in einer WG" in wg_ok  # listed as wanted
+    # Both still refuse swaps/sublets/temporary lets.
+    for prompt in (single_only, wg_ok):
+        assert "Wohnungstausch" in prompt and "Untermiete" in prompt and "Zwischenmiete" in prompt
+
+
+def test_send_gate_fails_open_on_llm_error():
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("groq down")
+    send, reason = provider.should_notify(_wg("x"), _secrets(), allow_wg=True, client=client)
+    assert send is True and reason == "llm-error-fail-open"
+
+
 _APP = ApplicationConfig(
     intro="Hallo, mein Name ist Patrik und ich studiere an der TUM.",
     garching_line="Deshalb ist die Lage perfekt für mich.",

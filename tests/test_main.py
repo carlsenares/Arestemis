@@ -7,7 +7,7 @@ from datetime import date
 from types import SimpleNamespace
 
 from flatsniper import main
-from flatsniper.config import Config, RentTier, SearchConfig, Secrets
+from flatsniper.config import WG_ANY, WG_EMPTY_2P, Config, RentTier, SearchConfig, Secrets
 from flatsniper.models import Listing
 from flatsniper.store import Store
 
@@ -23,7 +23,7 @@ def _config(**kw) -> Config:
     )
     return Config(
         search=search,
-        allow_empty_2person_wg=True,
+        wg_mode=kw.get("wg_mode", WG_EMPTY_2P),
         sources=kw.get("sources", {"fake": True}),
         poll_interval_seconds=60,
         about_me="",
@@ -124,6 +124,22 @@ def test_wg_classified_empty_then_rent_applies(monkeypatch):
     # Both empty 2p WGs, but only the cheap one clears the rent tier.
     assert (new, notified) == (2, 1)
     assert [l.external_id for l in got] == ["w1"]
+
+
+def test_wg_mode_any_skips_the_classifier(monkeypatch):
+    """An ordinary WG room needs no LLM read — it matches on rent/area/move-in."""
+    store = Store(":memory:")
+    room = _flat("w1", is_wg=True, wg_size=4, sqm=30, rent=650, title="WG-Zimmer München")
+    monkeypatch.setattr(main, "ADAPTERS", {"fake": _adapter("fake", [room])})
+
+    called = []
+    monkeypatch.setattr(main, "classify_empty_2p_wg", lambda l, s: called.append(l) or False)
+
+    got, notify = _collector()
+    new, notified = _run_cycle(_config(wg_mode=WG_ANY), store, notify)
+    assert (new, notified) == (1, 1)
+    assert [l.external_id for l in got] == ["w1"]
+    assert called == []  # classifier never consulted
 
 
 def test_sources_registered():

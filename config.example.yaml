@@ -10,7 +10,11 @@ search:
     - { min_sqm: 28, max_rent_warm: 1000 }   # 28-39 m²  -> up to 1000 EUR
     - { min_sqm: 40, max_rent_warm: 1200 }   # 40 m²+    -> up to 1200 EUR
   min_rooms: 1
-  earliest_move_in: "2026-08-01"   # YYYY-MM-DD
+  # Move-in window (YYYY-MM-DD). earliest_move_in is required; latest_move_in is
+  # optional and closes the window — without it, a listing free from any later
+  # date still matches, which is rarely what a target move-in date means.
+  earliest_move_in: "2026-08-01"
+  latest_move_in: "2026-08-31"
   # Area: the Garching <-> Munich corridor (TUM campus is in Garching). Broad on
   # purpose along the U6 axis; refine later. Adapters map these names to portal areas.
   areas:
@@ -21,14 +25,22 @@ search:
     - Schwabing
     - Maxvorstadt
     - München
+  # Vetoes a listing even when `areas` matched — use it to keep `areas` broad
+  # enough to scope the portal queries while carving the outskirts back out.
+  # Matched whole-word over city/district/PLZ/title, so "Dachauer Straße" is not
+  # read as Dachau. Accepts district names, town names and postal codes.
+  exclude_areas: []
   # Postal codes optional, used by sources that filter by PLZ:
   postal_codes: []
 
 wg_rule:
-  # Single apartments always qualify. A WG only qualifies if it's an EMPTY
-  # 2-person WG (you choose the flatmate). The LLM classifies this from the
-  # listing description.
-  allow_empty_2person_wg: true
+  # Single apartments always qualify. `mode` decides what happens to WG rooms:
+  #   none          -> WG rooms never match.
+  #   empty_2person -> only an EMPTY 2-person WG (you take the whole flat and
+  #                    choose the flatmate). The LLM classifies this from the
+  #                    listing description.
+  #   any           -> an ordinary room in a shared flat is a valid hit too.
+  mode: empty_2person
 
 sources:
   wg_gesucht: true

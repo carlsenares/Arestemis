@@ -67,7 +67,7 @@ _CARD_RE = re.compile(r'offer_list_item[^"]*"\s+data-id="(\d+)"')
 def _enabled_categories(config: Config) -> list[int]:
     """Single flats (1-room + flat) always; WG rooms only if the rule allows it."""
     cats = [1, 2]
-    if config.allow_empty_2person_wg:
+    if config.wg_allowed:
         cats = [0, *cats]
     return cats
 
