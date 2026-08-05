@@ -202,7 +202,7 @@ def test_run_cycle_records_enumeration_into_stats(monkeypatch):
     assert stats["fake"]["enumerated"] == 42
 
 
-def test_scheduler_drives_scrape_watch_detect_heal_notify(monkeypatch):
+def test_scheduler_drives_scrape_watch_detect_and_heals_silently(monkeypatch):
     # Adapter that always enumerates ZERO cards -> a source going dark.
     monkeypatch.setattr(main, "ADAPTERS", {"fake": _counting_adapter("fake", [], 0)})
     monkeypatch.setattr(main.asyncio, "sleep", _noop_sleep())
@@ -218,14 +218,17 @@ def test_scheduler_drives_scrape_watch_detect_heal_notify(monkeypatch):
         alerts.append(text)
 
     store = Store(":memory:")
-    # Default streak threshold is 3 -> trips on the 3rd zero cycle.
+    # Default streak threshold is 3 -> trips on the 3rd zero cycle. Detection then
+    # self-heals immediately but the "blocked" alert is held for the confirmation
+    # grace (~7 min), which these fast cycles don't reach -> no user-facing alert
+    # yet. (The notify-after-grace path is covered in tests/test_monitor.py.)
     asyncio.run(main.scheduler_loop(
         _config(), store, lambda l: None,
         interval=0, max_cycles=3, max_notify=None,
         sessions=sessions, alert=alert,
     ))
-    assert sessions.rotated == ["fake"]  # self-heal fired
-    assert len(alerts) == 1 and "Session" in alerts[0]  # user notified once
+    assert sessions.rotated == ["fake"]  # self-heal fired on detection
+    assert alerts == []  # alert held during the grace window -> no spam
 
 
 def test_scheduler_no_watch_without_sessions_or_alert(monkeypatch):
